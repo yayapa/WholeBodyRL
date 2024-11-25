@@ -12,6 +12,11 @@ from data.datasets import *
 from data.datasets import AbstractDataset, AbstractDataset_Test
 from utils.data_related import find_healthy_subjects, find_indices_of_images, process_cmr_images
 
+import torch
+from torch.utils.data import Sampler
+import torch.distributed as dist
+import math
+
 class CMRDataModule(pl.LightningDataModule):
     def __init__(self, load_dir: str, processed_dir: str,  
                  all_feature_tabular_dir: str, biomarker_tabular_dir: str, dataloader_file_folder: str, 
@@ -192,5 +197,157 @@ class CMRDataModule(pl.LightningDataModule):
             table = table.sort_values(by=["Age_group_idx", "Age_group"])
 
         return table
-        
 
+
+
+
+
+
+class RandomDistributedSampler(Sampler):
+    def __init__(self, dataset, num_samples=None, replacement=True):
+        super().__init__(dataset)
+        self.dataset = dataset
+        self.num_samples = num_samples or len(dataset)
+        self.replacement = replacement
+
+        # Check if distributed is available and initialized
+        if dist.is_available() and dist.is_initialized():
+            self.num_replicas = dist.get_world_size()
+            self.rank = dist.get_rank()
+        else:
+            print("distributed is not available and initialized")
+            self.num_replicas = 1
+            self.rank = 0
+
+        self.num_samples_per_rank = math.ceil(self.num_samples / self.num_replicas)
+        self.total_size = self.num_samples_per_rank * self.num_replicas
+        self.epoch = 0
+
+    def set_epoch(self, epoch):
+        self.epoch = epoch
+
+    def __iter__(self):
+        g = torch.Generator()
+        g.manual_seed(self.epoch)  # Ensuring reproducibility
+
+        # Randomly sample indices from the entire dataset
+        indices = torch.randperm(len(self.dataset), generator=g).tolist()
+
+        # Ensure each rank gets a non-overlapping subset of indices
+        indices = indices[self.rank:self.total_size:self.num_replicas]
+
+        # Truncate to desired number of samples per rank
+        return iter(indices[:self.num_samples_per_rank])
+
+    def __len__(self):
+        return self.num_samples_per_rank
+
+class WBDataModule(pl.LightningDataModule):
+    def __init__(self,
+                 load_dir: str,
+                 labels_folder: str,
+                 dataset_cls: Dataset = AbstractDataset, load_seg: bool = False,
+                 num_train: int = 1000, num_val: int = 100, num_test: int = 100,
+                 train_num_per_epoch: int = 1000,
+                 all_value_names: list[str] = ["Age"],
+                 target_value_name: str = "Age",
+                 batch_size: int = 16,
+                 num_workers: int = 8,
+                 image_size: list[int] = [224, 168, 363],
+                 augment: bool = True,
+                 sorting_group: int = 5,
+                 replace_processed: bool = False,
+                 body_mask_dir: str = None,
+                 multi_gpu: bool = False,
+                 **kwargs):
+        super().__init__()
+
+        self.load_dir = load_dir
+        self.labels_folder = labels_folder
+
+        self.dataset_cls = dataset_cls
+        self.num_train = num_train
+        self.num_val = num_val
+        self.num_test = num_test
+        self.train_num_per_epoch = train_num_per_epoch
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+        self.all_value_names = all_value_names
+        self.target_value_name = target_value_name
+        self.image_size = image_size
+        self.augment = augment
+        self.sorting_group = sorting_group
+        self.replace_processed = replace_processed
+
+        self.train_dset = None
+        self.val_dset = None
+        self.test_dset = None
+        self.num_cases = num_train + num_val + num_test
+        self.body_mask_dir = body_mask_dir
+        self.multi_gpu = multi_gpu
+
+    def setup(self, stage):
+        labels = pd.read_csv(os.path.join(self.labels_folder, "labels.csv"))
+        labels_train = labels[labels["split"] == "train"]
+        labels_val = labels[labels["split"] == "val"]
+        labels_test = labels[labels["split"] == "test"]
+
+        # reset index
+        labels_train = labels_train.reset_index(drop=True)
+        labels_val = labels_val.reset_index(drop=True)
+        labels_test = labels_test.reset_index(drop=True)
+
+        self.train_dset = eval(f'{self.dataset_cls}')(
+            labels=labels_train,
+            target_value_name=self.target_value_name,
+            load_dir=self.load_dir,
+            augs=self.augment,
+            img_size=self.image_size,
+            body_mask_dir=self.body_mask_dir
+        )
+        self.val_dset = eval(f'{self.dataset_cls}_Test')(
+            labels=labels_val,
+            target_value_name=self.target_value_name,
+            load_dir=self.load_dir,
+            augs=self.augment,
+            img_size=self.image_size,
+            body_mask_dir=self.body_mask_dir
+        )
+        self.test_dset = eval(f'{self.dataset_cls}_Test')(
+            labels=labels_test,
+            target_value_name=self.target_value_name,
+            load_dir=self.load_dir,
+            augs=self.augment,
+            img_size=self.image_size,
+            body_mask_dir=self.body_mask_dir
+        )
+
+        if self.multi_gpu:
+            self._train_dataloader = DataLoader(self.train_dset,
+                                                batch_size=self.batch_size,
+                                                #sampler=RandomDistributedSampler(self.train_dset,
+                                                #                      num_samples=self.train_num_per_epoch),
+                                                num_workers=self.num_workers,
+                                                pin_memory=True,
+                                                persistent_workers=self.num_workers > 0)
+
+        else:
+            self._train_dataloader = DataLoader(self.train_dset,
+                                            batch_size=self.batch_size,
+                                            sampler=RandomSampler(self.train_dset,
+                                                                  num_samples=self.train_num_per_epoch),
+                                            num_workers=self.num_workers,
+                                            pin_memory=True,
+                                            persistent_workers=self.num_workers > 0)
+        self._val_dataloader = DataLoader(self.val_dset, batch_size=self.batch_size, num_workers=0)
+        self._test_dataloader = DataLoader(self.test_dset, batch_size=self.batch_size, num_workers=0)
+
+    def train_dataloader(self):
+        return self._train_dataloader
+
+    def val_dataloader(self):
+        return self._val_dataloader
+
+    def test_dataloader(self):
+        return self._test_dataloader

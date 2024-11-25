@@ -15,15 +15,9 @@ import os
 @dataclasses.dataclass
 class PathHolder:
     dataset_folder: str
-    all_feature_tabular_dir: str
-    biomarker_tabular_dir: str
-    processed_folder: str
     log_folder: str
-    dataloader_file_folder: str
-    cmr_path_pickle_name: str
-    biomarker_table_pickle_name: str
-    processed_table_pickle_name: str
-    extra_tabular_dir: Optional[str] = None
+    labels_folder: str
+    body_mask_folder: str
 
 
 def get_computer_id():
@@ -39,16 +33,10 @@ def get_computer_id():
 
 def get_data_paths():
     return PathHolder(dataset_folder=os.path.join(os.environ["DATA_ROOT"]),
-                        all_feature_tabular_dir=os.path.join(os.environ["ALL_FEATURE_TABULAR_DIR"]),
-                        biomarker_tabular_dir=os.path.join(os.environ["BIOMARKER_TABULAR_DIR"]),
-                        processed_folder=os.path.join(os.environ["PROCESS_ROOT"]),
                         log_folder=os.path.join(os.environ["LOG_FOLDER"]),
-                        dataloader_file_folder=os.path.join(os.environ["DATALOADER_FILE_ROOT"]),
-                        cmr_path_pickle_name=os.path.join(os.environ["CMR_PATH_PICKLE_NAME"]),
-                        biomarker_table_pickle_name=os.path.join(os.environ["BIOMARKER_PICKLE_NAME"]),
-                        processed_table_pickle_name=os.path.join(os.environ["PROCESSED_PICKLE_NAME"]),
-                        extra_tabular_dir=os.getenv('EXTRA_TABULAR_DIR'),
-                        )
+                      labels_folder=os.path.join(os.environ["LABELS_FOLDER"]),
+                      body_mask_folder=os.path.join(os.environ["BODY_MASK_FOLDER"]))
+
 
 
 def get_biggest_2D_slice_bbox(segmentation: np.ndarray, padding: int = 10, **kwargs) \

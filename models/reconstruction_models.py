@@ -1,3 +1,4 @@
+import os.path
 import time
 
 import lightning.pytorch as pl
@@ -159,7 +160,7 @@ class ReconMAE(BasicModule):
         x = self.encoder_norm(x)
         return x
     
-    def forward_encoder(self, x):
+    def forward_encoder(self, x, roi_mask=None):
         """Forward pass of encoder
         input: [B, S, T, H, W] torch.Tensor
         output:
@@ -173,9 +174,18 @@ class ReconMAE(BasicModule):
         # Add positional embedding: (B, S * T * num_patches, embed_dim)
         enc_pos_embed = self.enc_pos_embed.repeat(x.shape[0], 1, 1)
         x = x + enc_pos_embed[:, 1:, :]
+
+        # Patchify binary mask to align with patch embeddings
+        #print("roi_mask before patchifying", roi_mask.shape)
+        roi_mask_patchified = patchify(roi_mask, patch_size=self.patch_size)  # [B, L]
+        #print("roi mask pathcified", roi_mask_patchified.shape)
+        roi_mask_patchified = torch.any(roi_mask_patchified > 0, dim=-1).float()  # Collapse patch volume to [N, L], 1 if any element > 0
+        #print("roi mask pathcified", roi_mask_patchified.shape)
+
+        #print("x shape", x.shape)
         
         # Mask patches: length -> length * mask_ratio
-        x, mask, ids_restore = self.masker(x)
+        x, mask, ids_restore = self.masker(x, roi_mask=roi_mask_patchified)
         
         # Append cls token: (B, 1 + length * mask_ratio, embed_dim)
         cls_token = self.cls_token + enc_pos_embed[:, :1, :] # (1, 1, embed_dim)
@@ -218,15 +228,15 @@ class ReconMAE(BasicModule):
         x = torch.sigmoid(x) # scale x to [0, 1] for reconstruction task
         return x
     
-    def forward(self, imgs):
-        latent, mask, ids_restore = self.forward_encoder(imgs)
+    def forward(self, imgs, roi_masks=None):
+        latent, mask, ids_restore = self.forward_encoder(imgs, roi_masks)
         pred = self.forward_decoder(latent, ids_restore)
         return pred, mask
         
     def training_step(self, batch, batch_idx, mode="train"):
-        imgs, _, sub_idx = batch
+        imgs, _, sub_idx, body_masks = batch
 
-        pred_patches, mask = self.forward(imgs)
+        pred_patches, mask = self.forward(imgs, roi_masks=body_masks)
         imgs_patches = patchify(imgs, patch_size=self.patch_size)
         loss_dict, psnr_value = self.reconstruction_criterion(pred_patches, imgs_patches)
         
@@ -270,25 +280,62 @@ class ReconMAE(BasicModule):
         self.module_logger.update_metric_item(f"{mode}/recon_psnr", psnr_value, mode=mode)
                
     def log_recon_videos(self, mask, pred_patches, gt_imgs, sub_idx, mode="train"):
-        sub_path = eval(f"self.trainer.datamodule.{mode}_dset").subject_paths[sub_idx]
-        sub_id = sub_path.parent.name
+        #sub_path = eval(f"self.trainer.datamodule.{mode}_dset").subject_paths[sub_idx]
+        #sub_id = sub_path.parent.name
+        #print("sub_idx", sub_idx)
+        #print("sub_idx.item()", sub_idx.item())
+        #print("labels", eval(f"self.trainer.datamodule.{mode}_dset").labels)
+        sub_id = eval(f"self.trainer.datamodule.{mode}_dset").labels["eid"].iloc[sub_idx.item()]
+
         # Extend batch dimension for calculation
         mask = mask[None]
         pred_patches = pred_patches[None]
         gt_imgs = gt_imgs[None]
         # Prepare for wandb video logging: (B, S, T, H, W) -> (T, C, H, W)
-        # if self.mask_type in ["spatial", "outer_spatial"]:
+        #if self.mask_type in ["spatial", "outer_spatial"]:
         #     mask_patches = mask.unsqueeze(-1).repeat(1, 1, gt_imgs.shape[2] * np.prod(self.patch_size))
-        # else:
+        #else:
         #     mask_patches = mask.unsqueeze(-1).repeat(1, 1, np.prod(self.patch_size))
-        # mask_imgs = unpatchify(mask_patches, patch_size=self.patch_size, im_shape=gt_imgs.shape, mask_type=self.mask_type)
+        #print("mask shape", mask.shape)
+        mask_patches = mask.unsqueeze(-1).repeat(1, 1, np.prod(self.patch_size))
+        #print("mask shape", mask.shape)
+        #mask_imgs = unpatchify(mask_patches, patch_size=self.patch_size, im_shape=gt_imgs.shape)
+        #print("maks_img", mask_imgs.shape)
         pred_imgs = unpatchify(pred_patches, im_shape=gt_imgs.shape, patch_size=self.patch_size)
         # Select the first data in the batch for logging
-        # mask_img_log = imgs_to_wandb_video(mask_imgs[0])
+
+        #mask_img_log = imgs_to_wandb_video(mask_imgs[0])
+        mask_vis_path = "/u/home/sdm/GitHub/WholeBodyRL/mask_vis_path"
+
+
+
+        #self.save_nifti(gt_imgs[0][0], np.eye(4), os.path.join(mask_vis_path, "gt.nii.gz"))
+        #self.save_nifti(mask_imgs[0][0], np.eye(4), os.path.join(mask_vis_path, "masked.nii.gz"))
+
+
+
         # pred_img_log = imgs_to_wandb_video(pred_imgs[0])
         # gt_img_log = imgs_to_wandb_video(gt_imgs[0])
         gt_pred_img_log = imgs_to_wandb_video(torch.cat([gt_imgs[0], pred_imgs[0]], dim=2))
         # replaced_pred_img_log = replace_with_gt_wandb_video(pred_img_log, gt_img_log, mask_img_log)
-        # self.module_logger.update_video_item(f"{mode}_video/masks", sub_id, mask_img_log, mode=mode)
+        #self.module_logger.update_video_item(f"{mode}_video/masks", sub_id, mask_img_log, mode=mode)
         self.module_logger.update_video_item(f"{mode}_video/pred_imgs", sub_id, gt_pred_img_log, mode=mode)
         # self.module_logger.update_video_item(f"{mode}_video/pred_imgs_w_gt", sub_id, replaced_pred_img_log, mode=mode)
+
+    def save_nifti(self, data, affine, filepath):
+        import nibabel as nib
+        """
+        Save a 3D or 4D tensor as a NIfTI file.
+        Args:
+            data: numpy array to save.
+            affine: affine transformation matrix for the NIfTI file.
+            filepath: path to save the NIfTI file.
+        """
+        affine[0, 0] = 2.23  # Voxel size in x-direction
+        affine[1, 1] = 3.00  # Voxel size in y-direction
+        affine[2, 2] = 2.23  # Voxel size in z-direction
+        #data = data.permute(1, 2, 3, 0)
+        #data
+        data = data.cpu().numpy()
+        nifti_img = nib.Nifti1Image(data, affine)
+        nib.save(nifti_img, filepath)

@@ -10,45 +10,44 @@ from typing import Tuple, Optional
 
 from utils import image_normalization
 from data.transforms import *
+import nibabel as nib
+import torchio as tio
 
 
 __all__ = ["Cardiac2DplusT", "Cardiac2DplusT_Test", "Cardiac3DSAX", "Cardiac3DSAX_Test", 
            "Cardiac3DLAX", "Cardiac3DLAX_Test", "Cardiac3DplusTSAX", "Cardiac3DplusTSAX_Test", 
-           "Cardiac3DplusTLAX", "Cardiac3DplusTLAX_Test", "Cardiac3DplusTAllAX", "Cardiac3DplusTAllAX_Test"]
+           "Cardiac3DplusTLAX", "Cardiac3DplusTLAX_Test", "Cardiac3DplusTAllAX", "Cardiac3DplusTAllAX_Test",
+           "WB3DWatFat_Test", "WB3DWatFat"]
 
+EID_COL = "eid"
 
 class AbstractDataset(Dataset):
-    def __init__(self, subject_paths: Tuple[Path], target_table: pd.DataFrame, target_value_name: list[int],
-                 load_seg: bool = False,
+    def __init__(self,
+                 load_dir: str,
+                 labels: pd.DataFrame,
+                 target_value_name: list[int],
                  augs: bool = True,
-                 sax_slice_num: int = None,
                  num_classes: int = 4,
-                 time_frame: int = 50,
                  **kwargs):
-        self.subject_paths = subject_paths
-        self.target_table = target_table
+        self.load_dir = load_dir
+        self.labels = labels
         self.target_value_name = target_value_name
-        self.load_seg = load_seg
         self.augs = augs
-        self.sax_slice_num = sax_slice_num
         self.num_classes = num_classes
-        self.time_frame = time_frame
         self.z_seg_relative = kwargs.get("z_seg_relative", 4)
         self.augmentation = self._augment
         self.view = self.get_view()
         
     @property
     def _augment(self) -> bool:
-        if self.load_seg:
-            return False # Disable image augmentation for segmentation tast.
-        else:
-            return self.augs
+
+        return self.augs
     
     def get_view(self) -> int:
         raise NotImplementedError
 
     def __len__(self):
-        return len(self.subject_paths)
+        return len(self.labels)
     
     def __getitem__(self, index):
         raise NotImplementedError("__getitem__ is not implemented for AbstractDataset")
@@ -56,6 +55,105 @@ class AbstractDataset(Dataset):
 
 class AbstractDataset_Test(AbstractDataset):
     
+    @property
+    def _augment(self) -> bool:
+        return False
+
+class WB3DWatFat(AbstractDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.img_size = kwargs.get("img_size", (224, 168, 363))
+        self.body_mask_dir = kwargs.get("body_mask_dir", None)
+        self.slice_num = 2
+
+
+    def _load_nifti_image(self, img_path):
+        image_nifti = nib.load(img_path)
+        return image_nifti.get_fdata()
+
+    def __getitem__(self, idx):
+        img_name_wat = os.path.join(str(self.labels.loc[idx, EID_COL]), "wat.nii.gz")
+        img_path_wat = os.path.join(self.load_dir, img_name_wat)
+        image_nifti_wat = self._load_nifti_image(img_path_wat)
+        image_nifti_wat = np.expand_dims(image_nifti_wat, axis=0)  # add channel dimension
+
+        img_name_fat = os.path.join(str(self.labels.loc[idx, EID_COL]), "fat.nii.gz")
+        img_path_fat = os.path.join(self.load_dir, img_name_fat)
+        image_nifti_fat = self._load_nifti_image(img_path_fat)
+        image_nifti_fat = np.expand_dims(image_nifti_fat, axis=0)  # add channel dimension
+
+        transforms = tio.transforms.Compose(
+            [
+                tio.ZNormalization(),
+                tio.transforms.CropOrPad(self.img_size),
+            ]
+        )
+        image_nifti_wat = transforms(image_nifti_wat)
+        image_nifti_fat = transforms(image_nifti_fat)
+        image = np.concatenate((image_nifti_wat, image_nifti_fat), axis=0)
+
+        body_mask_path = os.path.join(self.body_mask_dir, str(self.labels.loc[idx, EID_COL]), "body_mask.nii.gz")
+        body_mask = self._load_nifti_image(body_mask_path)
+        # add 1 channel dimension
+        body_mask = np.expand_dims(body_mask, axis=0)
+        # crop or pad body mask
+        body_mask = tio.CropOrPad(self.img_size)(body_mask)
+
+        # print the number of 1 in the body mask:
+        #print("eid:", self.labels.loc[idx, EID_COL])
+        #print("mask ratio", np.sum(body_mask) / body_mask.size)
+
+        # duplicate body mask for 2 channels
+        body_mask = body_mask.repeat(2, axis=0)
+        body_mask = torch.from_numpy(body_mask).float()
+
+
+
+
+        if self.augmentation:
+            image = self._apply_augmentation(image)
+
+        if self.target_value_name:
+            target_value = self.labels.loc[idx, self.target_value_name]
+            #target_value = self._load_values(self._get_subject_id(idx))
+        else:
+            target_value = None
+
+        image = torch.from_numpy(image).float()  # [2, 224, 168, 363] torchio expects (C, W, H, D)
+
+        return image, target_value, idx, body_mask
+
+    def _load_values(self, subject_idx: int):
+        """
+        Just copied. has to be revised
+        """
+        target_value = self.labels[self.labels[EID_COL] == subject_idx][self.target_value_name]
+        target_value = np.array(target_value.iloc[0].tolist(), dtype=np.float32)
+        target_value = torch.from_numpy(target_value).reshape(1)
+        return target_value
+
+    def _get_subject_id(self, index):
+        return int(self.labels[index].parent.name)
+
+    def _apply_augmentation(self, im):
+        random_value = np.random.rand()
+        transforms = tio.transforms.Compose(
+                [
+                    tio.transforms.RandomFlip(axes=0, p=0.5),
+                    tio.transforms.RandomFlip(axes=1, p=0.5),
+                    tio.transforms.RandomFlip(axes=2, p=0.5),
+                    tio.transforms.RandomBlur(p=0.5, std=np.min([random_value, 0.5])),
+                    tio.transforms.RandomNoise(p=0.5, std=np.min([random_value, 0.5])),
+                ])
+
+        return transforms(im)
+
+    def get_view(self) -> int:
+        return 2
+
+
+class WB3DWatFat_Test(WB3DWatFat):
+
     @property
     def _augment(self) -> bool:
         return False
@@ -393,3 +491,6 @@ class Cardiac3DplusTAllAX_Test(Cardiac3DplusTAllAX):
     @property
     def _augment(self) -> bool:
         return False
+
+
+
