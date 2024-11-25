@@ -7,7 +7,7 @@ from pathlib import Path
 import torch
 import wandb
 
-from data.dataloaders import CMRDataModule
+from data.dataloaders import WBDataModule
 from models.reconstruction_models import ReconMAE
 from models.regression_models import RegrMAE, ResNet18Module, ResNet50Module
 from models.segmentation_models import SegMAE
@@ -17,6 +17,7 @@ from utils.params import load_config_from_yaml
 from lightning import Trainer, seed_everything
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, BaseFinetuning
+from dotenv import load_dotenv
 
 
 def parser_command_line():
@@ -29,6 +30,7 @@ def parser_command_line():
     parser_train.add_argument("-c", "--config", help="config file (.yml) containing the ¢hyper-parameters for inference.")
     parser_train.add_argument("-g", "--wandb_group_name", default=None, help="specify the name of the group")
     parser_train.add_argument("-n", "--wandb_run_name", default=None, help="specify the name of the experiment")
+    parser_train.add_argument("-m", "--multi_gpu", default=False, action="store_true", help="use multiple GPUs")
     # Arguments for evaluation
     parser_eval = subparser.add_parser("eval", help="evaluate the model")
     parser_eval.add_argument("-c", "--config", help="config file (.yml) containing the hyper-parameters for inference.")
@@ -38,6 +40,7 @@ def parser_command_line():
 
 
 def main():
+    load_dotenv()
     torch.backends.cudnn.enabled = True
     torch.set_float32_matmul_precision("medium")
     
@@ -47,10 +50,11 @@ def main():
     except AttributeError:
         config_path = None
     params = load_config_from_yaml(config_path)
+    multi_gpu = args.multi_gpu
     paths = get_data_paths()
     os.environ["WANDB_DISABLED"] = params.general.wandb_disabled
-    os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Configure accelerator and devices
-    seed_everything(params.general.seed, workers=True) # Sets seeds for numpy, torch and python.random.
+    #os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Configure accelerator and devices
+    seed_everything(params.general.seed, workers=False) # Sets seeds for numpy, torch and python.random.
 
     # Initialize wandb logging
     wandb_kwargs = dict()
@@ -63,23 +67,16 @@ def main():
     if params.general.wandb_run_id is not None:
         wandb_kwargs["id"] = params.general.wandb_run_id
     logger = CSVLogger(paths.log_folder)
-    wandb.init(project="MAE", config=asdict(params), **wandb_kwargs,)
+    wandb.init(project="WholeBodyRL", config=asdict(params), **wandb_kwargs,)
     
-    # Initialize data module
-    table_condition_dict = {"healthy_cases": True, "sorting_with_age": True,}
-    # CMR_condition_dict = {"min_slice_num": 9, "min_image_size": [128, 128]} # TODO
-    data_module = CMRDataModule(load_dir=paths.dataset_folder, 
-                                processed_dir=paths.processed_folder,
-                                all_feature_tabular_dir=paths.all_feature_tabular_dir, 
-                                biomarker_tabular_dir=paths.biomarker_tabular_dir,
-                                dataloader_file_folder=paths.dataloader_file_folder,
-                                extra_tabular_dir=paths.extra_tabular_dir,
-                                cmr_path_pickle_name=paths.cmr_path_pickle_name,
-                                biomarker_table_pickle_name=paths.biomarker_table_pickle_name,
-                                processed_table_pickle_name=paths.processed_table_pickle_name,
-                                table_condition_dict=table_condition_dict,
-                                
-                                **params.data.__dict__)
+
+    data_module = WBDataModule(
+        load_dir=paths.dataset_folder,
+        labels_folder=paths.labels_folder,
+        body_mask_dir=paths.body_mask_folder,
+        multi_gpu=multi_gpu,
+        **params.data.__dict__
+    )
     data_module.setup("fit")
 
     # Initialze lighting module
@@ -97,7 +94,10 @@ def main():
         module_params = {**params.module.training_params.__dict__, **params.module.seg_hparams.__dict__}
     else:
         raise NotImplementedError
+
+    print("Before model load")
     model = module_cls(val_dset=data_module.val_dset, **module_params)
+    print("After model load")
     
     # Check the resuming and loading of the checkpoints
     resume_ckpt_path = None
@@ -134,20 +134,38 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
     checkpoint_callback = ModelCheckpoint(dirpath=ckpt_dir, filename=ckpt_filename, monitor=monitor_metric, 
                                           mode=monitor_mode, save_top_k=5, save_last=True, verbose=True,)
-    
-    # Initialize trainer
-    trainer = Trainer(
-        default_root_dir=paths.log_folder,
-        logger=logger,
-        callbacks=[checkpoint_callback],
-        fast_dev_run=False,
-        limit_train_batches=1.0,
-        limit_val_batches=1.0,
-        num_sanity_val_steps=2,
-        benchmark=True,
 
-        **params.trainer.__dict__,
-    )
+    print("Before trainer")
+    # Initialize trainer
+    if multi_gpu:
+        trainer = Trainer(
+            default_root_dir=paths.log_folder,
+            logger=logger,
+            callbacks=[checkpoint_callback],
+            fast_dev_run=False,
+            limit_train_batches=1.0,
+            limit_val_batches=1.0,
+            num_sanity_val_steps=2,
+            benchmark=True,
+            devices="auto",  # Automatically select all available GPUs or specify a number like `devices=2`
+            strategy="ddp",  # Distributed Data Parallel (DDP) strategy for multi-GPU training
+            #use_distributed_sampler=False,
+            **params.trainer.__dict__,
+        )
+    else:
+        trainer = Trainer(
+            default_root_dir=paths.log_folder,
+            logger=logger,
+            callbacks=[checkpoint_callback],
+            fast_dev_run=False,
+            limit_train_batches=1.0,
+            limit_val_batches=1.0,
+            num_sanity_val_steps=2,
+            benchmark=True,
+
+            **params.trainer.__dict__,
+        )
+    print("Before fit")
 
     if args.pipeline == "train":
         trainer.fit(model, datamodule=data_module, ckpt_path=resume_ckpt_path)

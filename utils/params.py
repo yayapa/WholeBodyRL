@@ -11,7 +11,7 @@ class GeneralParams:
     wandb_group_name: Optional[str] = None
     wandb_run_name: Optional[str] = None
     wandb_run_id: Optional[str] = None
-    wandb_entity: str = "walala"
+    wandb_entity: str = "yayapa"
     wandb_disabled: str = "true"
     
     seed: int = 1
@@ -37,12 +37,12 @@ class DataParams:
     batch_size: int = 1
     num_workers: int = 4
     
-    dataset_cls: str = "Cardiac3DplusTAllAX"
+    dataset_cls: str = "WB3DWatFat"
     load_seg: bool = False
-    all_value_names: Tuple[str, ...] = ("Age", "LVEDV (mL)", "LVESV (mL)", "LVSV (mL)", "LVEF (%)", "LVCO (L/min)", "LVM (g)", "RVEDV (mL)", "RVESV (mL)", "RVSV (mL)", "RVEF (%)", "LAV max (mL)", "LAV min (mL)", "LASV (mL)", "LAEF (%)", "RAV max (mL)", "RAV min (mL)", "RASV (mL)", "RAEF (%)")
-    target_value_name: str = "LVM (g)" # Only select the ones that are involved in training 
+    all_value_names: Tuple[str, ...] = ("age", "bmi", "sex")
+    target_value_name: str = "age" # Only select the ones that are involved in training
     
-    sax_slice_num: int = 6
+    contrast_slice_num: int = 2
     time_frame: int = 50
     image_size: Tuple[int, ...] = (128, 128)
     
@@ -150,7 +150,7 @@ def load_config_from_yaml(file_path):
 
     return update_params
 
-
+"""
 def update_dataclass_from_dict(params, config_data: Dict[str, Any]):
     updated_fields = {}
     instance_dict = asdict(params)
@@ -167,6 +167,20 @@ def update_dataclass_from_dict(params, config_data: Dict[str, Any]):
         else:
             raise NameError(f"{key} is not defined in the dataclass")
     return params.__class__(**instance_dict)
+"""
+
+def update_dataclass_from_dict(params, config_data: Dict[str, Any]):
+    # Update the dataclass fields without converting to dictionary
+    for key, value in config_data.items():
+        if is_field_name(params, key):
+            attr = getattr(params, key)
+            if isinstance(value, dict) and hasattr(attr, '__dataclass_fields__'):
+                # Recursively update nested dataclass
+                updated_value = update_dataclass_from_dict(attr, value)
+                setattr(params, key, updated_value)
+            else:
+                setattr(params, key, value)
+    return params
 
 
 def is_field_name(dataclass_type, field_name):
