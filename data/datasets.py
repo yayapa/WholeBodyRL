@@ -82,9 +82,13 @@ class WB3DWatFat(AbstractDataset):
         image_nifti_fat = self._load_nifti_image(img_path_fat)
         image_nifti_fat = np.expand_dims(image_nifti_fat, axis=0)  # add channel dimension
 
+        # Min-Max Normalization
+        image_nifti_wat = self._min_max_normalize(image_nifti_wat)
+        image_nifti_fat = self._min_max_normalize(image_nifti_fat)
+
         transforms = tio.transforms.Compose(
             [
-                tio.ZNormalization(),
+                #tio.ZNormalization(),
                 tio.transforms.CropOrPad(self.img_size),
             ]
         )
@@ -106,6 +110,9 @@ class WB3DWatFat(AbstractDataset):
         # duplicate body mask for 2 channels
         body_mask = body_mask.repeat(2, axis=0)
         body_mask = torch.from_numpy(body_mask).float()
+        body_mask = body_mask.permute(0, 3, 2, 1)   # [2, 360, 168, 224]
+
+        #assert body_mask.shape == (2, 360, 168, 224)
 
 
 
@@ -120,6 +127,10 @@ class WB3DWatFat(AbstractDataset):
             target_value = None
 
         image = torch.from_numpy(image).float()  # [2, 224, 168, 363] torchio expects (C, W, H, D)
+        # permute to [C, D, H, W]
+        image = image.permute(0, 3, 2, 1) # [2, 363, 224, 168]
+
+        #assert image.shape == (2, 360, 168, 224)
 
         return image, target_value, idx, body_mask
 
@@ -142,11 +153,25 @@ class WB3DWatFat(AbstractDataset):
                     tio.transforms.RandomFlip(axes=0, p=0.5),
                     tio.transforms.RandomFlip(axes=1, p=0.5),
                     tio.transforms.RandomFlip(axes=2, p=0.5),
-                    tio.transforms.RandomBlur(p=0.5, std=np.min([random_value, 0.5])),
-                    tio.transforms.RandomNoise(p=0.5, std=np.min([random_value, 0.5])),
+                    #tio.transforms.RandomBlur(p=0.5, std=np.min([random_value, 0.5])),
+                    #tio.transforms.RandomNoise(p=0.5, std=np.min([random_value, 0.5])),
                 ])
 
         return transforms(im)
+
+    def _min_max_normalize(self, image):
+        """Applies min-max normalization to an image."""
+        # Flatten the image to find min and max values
+        min_val = np.min(image)
+        max_val = np.max(image)
+
+        # Handle edge case where min and max are the same (e.g., constant image)
+        if max_val == min_val:
+            return np.zeros_like(image)  # If all values are the same, return an array of zeros
+
+        # Apply min-max normalization to scale to [0, 1]
+        normalized_image = (image - min_val) / (max_val - min_val)
+        return normalized_image
 
     def get_view(self) -> int:
         return 2

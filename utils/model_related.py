@@ -237,6 +237,7 @@ class Masker:
         mask: [N, L], binary mask
         ids_restore: [N, L], indices to restore the original order
         """
+        print("Ranodm Masking")
         N, L, D = input_size  # batch, length, dim
         len_keep = int(L * (1 - self.mask_ratio))
         
@@ -291,6 +292,10 @@ class Masker:
             ids_restore: [N, L], indices to restore the original order.
             ids_keep: [N, len_keep], indices of kept patches.
         """
+        print("Random Masking within ROI")
+
+        num_roi_patches = torch.sum(roi_mask, dim=1)
+
         N, L, D = input_size  # Extract shape directly
 
         # Ensure roi_mask is binary and matches the input
@@ -298,7 +303,9 @@ class Masker:
         #print(f"ROI mask binary shape: {roi_mask.shape}")  # Expected: [4, 5376]
 
         # Calculate the total number of spatches to mask
-        num_to_mask = int(L * self.mask_ratio)  # Fixed number of patches to mask per sample
+        #num_to_mask = int(L * self.mask_ratio)  # Fixed number of patches to mask per sample
+        num_to_mask = int(torch.min(num_roi_patches).item() * self.mask_ratio)  # Mask a fraction of ROI patches
+        #num_to_mask = num_roi_patches * self.mask_ratio
 
         # Initialize mask as all zeros (unmasked)
         mask = torch.zeros([N, L], device=device)
@@ -317,6 +324,11 @@ class Masker:
             # Mask the first `num_to_mask` ROI patches
             #print("num_to_mask, num_roi_indices", num_to_mask, len(roi_indices))
             num_to_mask_i = min(num_to_mask, len(roi_indices))  # Limit to the number of available ROI patches
+            if num_to_mask > len(roi_indices):
+                print("Num to mask is greater than the number of available ROI patches.")
+            else:
+                print("mask fraction: ", num_to_mask_i / len(roi_indices))
+            #num_to_mask_i = int(num_to_mask[i].item())
             mask[i, shuffled_indices[:num_to_mask_i]] = 1  # Set these patches as masked
 
         # Generate ids_restore for reordering patches

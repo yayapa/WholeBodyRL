@@ -12,6 +12,7 @@ from networks.decoders import ViTDecoder
 from utils.logging_related import imgs_to_wandb_video, replace_with_gt_wandb_video, CustomWandbLogger
 from utils.model_related import Masker, PatchEmbed, sincos_pos_embed, patchify, unpatchify
 from timm.models.vision_transformer import Block
+from data.dataloaders import RandomDistributedSampler
 
 from utils.train_related import add_weight_decay
 
@@ -30,19 +31,44 @@ class BasicModule(pl.LightningModule):
         self.train_epoch_start_time = None
         self.val_epoch_start_time = None
         self.test_epoch_start_time = None
+        self.batch_size = kwargs.get("batch_size")
+        self.train_num_per_epoch = kwargs.get("train_num_per_epoch")
+        self.max_lr = kwargs.get("max_lr")
         self.module_logger = CustomWandbLogger()
+        self.multi_gpu = kwargs.get("multi_gpu", False)
         
     def configure_optimizers(self):
         # param_groups = add_weight_decay(self.named_parameters(), self.optim_weight_decay)
         # optimizer = optim.Adam(param_groups, lr=self.lr)
         optimizer = optim.Adam(self.parameters(), lr=self.lr)
+
         # scheduler = CosineAnnealingWarmRestarts(optimizer, T_0=self.warmup_epochs, eta_min=self.min_lr)
         # return {"optimizer": optimizer, "lr_scheduler": {"scheduler": scheduler}}
         return optimizer
 
+    """
+    def configure_optimizers(self):
+        optimizer = torch.optim.Adam(self.parameters(), lr=self.lr)
+
+        steps_per_epoch = self.train_num_per_epoch // self.batch_size   # Number of steps per epoch
+        scheduler = torch.optim.lr_scheduler.OneCycleLR(
+            optimizer,
+            max_lr=self.max_lr,  # Peak learning rate
+            steps_per_epoch=steps_per_epoch,  # Number of steps per epoch
+            epochs=self.trainer.max_epochs,  # Total number of epochs
+            pct_start=0.3  # Percentage of the cycle spent increasing LR
+        )
+        return [optimizer], [{"scheduler": scheduler, "interval": "step"}]
+    """
     def on_train_epoch_start(self) -> None:
         self.train_epoch_start_time = time.time()
         self.module_logger.reset_item()
+        # ser epoch in sampler of train dataloader
+        if self.multi_gpu:
+            datamodule = self.trainer.datamodule
+            if hasattr(datamodule, '_train_dataloader') and hasattr(datamodule._train_dataloader, 'sampler'):
+                if isinstance(datamodule._train_dataloader.sampler, RandomDistributedSampler):
+                    datamodule._train_dataloader.sampler.set_epoch(self.current_epoch)
 
     def on_validation_epoch_end(self) -> None:
         self.module_logger.wandb_log(self.current_epoch, mode="val")
@@ -69,6 +95,7 @@ class ReconMAE(BasicModule):
         self.patch_p_num = np.prod(kwargs.get("patch_size")) * kwargs.get("patch_in_channels")
         # --------------------------------------------------------------------------
         # MAE encoder
+        print("patch in channels", kwargs.get("patch_in_channels"))
         self.patch_embed = self.patch_embed_cls(self.img_shape, 
                                                 in_channels=kwargs.get("patch_in_channels"), 
                                                 patch_size=kwargs.get("patch_size"), 
@@ -87,6 +114,7 @@ class ReconMAE(BasicModule):
         self.masker = Masker(mask_type=kwargs.get("mask_type"), 
                              mask_ratio=kwargs.get("mask_ratio"), 
                              grid_size=self.patch_embed.grid_size)
+
         self.mask_token = nn.Parameter(torch.zeros(1, 1, kwargs.get("dec_embed_dim")), requires_grad=True)
         # --------------------------------------------------------------------------
         # Reconstruction decoder and head
@@ -103,6 +131,7 @@ class ReconMAE(BasicModule):
         self.reconstruction_criterion = ReconstructionCriterion(**kwargs)
         self.initialize_parameters()
         self.save_hyperparameters()
+
     
     def initialize_parameters(self):        
         # Initialize (and freeze) pos_embed by sin-cos embedding
@@ -163,6 +192,7 @@ class ReconMAE(BasicModule):
     def forward_encoder(self, x, roi_mask=None):
         """Forward pass of encoder
         input: [B, S, T, H, W] torch.Tensor
+        input: [B, S, T, H, W] torch.Tensor
         output:
             latent: [B, 1 + length * mask_ratio, embed_dim] torch.Tensor
             mask: [B, 1 + length * mask_ratio] torch.Tensor
@@ -180,13 +210,19 @@ class ReconMAE(BasicModule):
         roi_mask_patchified = patchify(roi_mask, patch_size=self.patch_size)  # [B, L]
         #print("roi mask pathcified", roi_mask_patchified.shape)
         roi_mask_patchified = torch.any(roi_mask_patchified > 0, dim=-1).float()  # Collapse patch volume to [N, L], 1 if any element > 0
+        # calculate number of patches with 1 in mask
+        #roi_ratio = roi_mask_patchified.sum(dim=-1) / roi_mask_patchified.shape[-1]
+        #print("roi_ratio:", roi_ratio)
         #print("roi mask pathcified", roi_mask_patchified.shape)
 
         #print("x shape", x.shape)
         
         # Mask patches: length -> length * mask_ratio
         x, mask, ids_restore = self.masker(x, roi_mask=roi_mask_patchified)
-        
+        print("mask", torch.sum(mask))
+        print("ids_restore", ids_restore.shape)
+        print("ids_restore", ids_restore.shape)
+
         # Append cls token: (B, 1 + length * mask_ratio, embed_dim)
         cls_token = self.cls_token + enc_pos_embed[:, :1, :] # (1, 1, embed_dim)
         cls_tokens = cls_token.expand(x.shape[0], -1, -1) # (B, 1, embed_dim)
@@ -210,6 +246,11 @@ class ReconMAE(BasicModule):
         x = self.decoder_embed(x)
         
         # Append mask tokens and add positional embedding in schuffled order
+        # No mask tokens; directly proceed with embedding
+        #dec_pos_embed = self.dec_pos_embed.repeat(x.shape[0], 1, 1)
+        #x_restore_ = x[:, 1:, :] + dec_pos_embed[:, 1:, :]  # Exclude cls token for normal patches
+        #cls_tok_ = x[:, :1, :] + dec_pos_embed[:, :1, :]
+
         mask_token_n = ids_restore.shape[1] + 1 - x.shape[1]
         mask_tokens = self.mask_token.repeat(x.shape[0], mask_token_n, 1)
         x_shuffle = torch.cat([x[:, 1:, :], mask_tokens], dim=1)
@@ -236,10 +277,13 @@ class ReconMAE(BasicModule):
     def training_step(self, batch, batch_idx, mode="train"):
         imgs, _, sub_idx, body_masks = batch
 
+        roi_mask_patchified = patchify(body_masks, patch_size=self.patch_size)  # [B, L]
+        roi_mask_patchified = torch.any(roi_mask_patchified > 0, dim=-1).float()  # Collapse patch volume to [N, L], 1 if any element > 0
+
         pred_patches, mask = self.forward(imgs, roi_masks=body_masks)
         imgs_patches = patchify(imgs, patch_size=self.patch_size)
-        loss_dict, psnr_value = self.reconstruction_criterion(pred_patches, imgs_patches)
-        
+        #loss_dict, psnr_value = self.reconstruction_criterion(pred_patches, imgs_patches, mask)
+        loss_dict, psnr_value = self.reconstruction_criterion(pred_patches, imgs_patches, roi_mask_patchified)
         # Logging metrics and median
         self.log_recon_metrics(loss_dict, psnr_value, mode=mode)
         if mode == "train" or mode == "val":
@@ -299,7 +343,8 @@ class ReconMAE(BasicModule):
         #print("mask shape", mask.shape)
         mask_patches = mask.unsqueeze(-1).repeat(1, 1, np.prod(self.patch_size))
         #print("mask shape", mask.shape)
-        #mask_imgs = unpatchify(mask_patches, patch_size=self.patch_size, im_shape=gt_imgs.shape)
+        mask_imgs = unpatchify(mask_patches, patch_size=self.patch_size, im_shape=gt_imgs.shape)
+        #mask_imgs = mask_imgs.squeeze(0)
         #print("maks_img", mask_imgs.shape)
         pred_imgs = unpatchify(pred_patches, im_shape=gt_imgs.shape, patch_size=self.patch_size)
         # Select the first data in the batch for logging
@@ -316,11 +361,36 @@ class ReconMAE(BasicModule):
 
         # pred_img_log = imgs_to_wandb_video(pred_imgs[0])
         # gt_img_log = imgs_to_wandb_video(gt_imgs[0])
-        gt_pred_img_log = imgs_to_wandb_video(torch.cat([gt_imgs[0], pred_imgs[0]], dim=2))
+        #print("shape of gt_imgs", gt_imgs[0][0].shape)
+        #print("shape of pred_imgs", pred_imgs[0][0].shape)
+        #print("shape: ", torch.cat([gt_imgs[0][0], pred_imgs[0][0]], dim=2).shape)
+        gt_wat_img_log = imgs_to_wandb_video(gt_imgs[0][0]).cpu().numpy()
+        gt_fat_img_log = imgs_to_wandb_video(gt_imgs[0][1]).cpu().numpy()
+        pred_wat_img_log = imgs_to_wandb_video(pred_imgs[0][0]).cpu().numpy()
+        pred_fat_img_log = imgs_to_wandb_video(pred_imgs[0][1]).cpu().numpy()
+        mask_img_wat_log = imgs_to_wandb_video(mask_imgs[0][0]).cpu().numpy()
+        mask_img_fat_log = imgs_to_wandb_video(mask_imgs[0][1]).cpu().numpy()
+        self.module_logger.update_video_item(f"{mode}_video/gt_wat", sub_id, gt_wat_img_log, mode=mode)
+        self.module_logger.update_video_item(f"{mode}_video/gt_fat", sub_id, gt_fat_img_log, mode=mode)
+        self.module_logger.update_video_item(f"{mode}_video/pred_wat", sub_id, pred_wat_img_log, mode=mode)
+        self.module_logger.update_video_item(f"{mode}_video/pred_fat", sub_id, pred_fat_img_log, mode=mode)
+        self.module_logger.update_video_item(f"{mode}_video/mask_wat", sub_id, mask_img_wat_log, mode=mode)
+        self.module_logger.update_video_item(f"{mode}_video/mask_fat", sub_id, mask_img_fat_log, mode=mode)
+
+        #gt_pred_img_log = imgs_to_wandb_video(torch.cat([gt_imgs[0][0], pred_imgs[0][0]], dim=2))
+        # tp cpu and numpy
+        #gt_pred_img_log = gt_pred_img_log.cpu().numpy()
         # replaced_pred_img_log = replace_with_gt_wandb_video(pred_img_log, gt_img_log, mask_img_log)
         #self.module_logger.update_video_item(f"{mode}_video/masks", sub_id, mask_img_log, mode=mode)
-        self.module_logger.update_video_item(f"{mode}_video/pred_imgs", sub_id, gt_pred_img_log, mode=mode)
+        #self.module_logger.update_video_item(f"{mode}_video/pred_imgs", sub_id, gt_pred_img_log, mode=mode)
         # self.module_logger.update_video_item(f"{mode}_video/pred_imgs_w_gt", sub_id, replaced_pred_img_log, mode=mode)
+
+        #sanity check patchify, mask and unpatchify the gt image
+        gt_patches = patchify(gt_imgs, patch_size=self.patch_size)
+        gt_patches = unpatchify(gt_patches, im_shape=gt_imgs.shape, patch_size=self.patch_size)
+        gt_patches = imgs_to_wandb_video(gt_patches[0][0]).cpu().numpy()
+        self.module_logger.update_video_item(f"{mode}_video/gt_patchified_unpatchified_wat", sub_id, gt_patches, mode=mode)
+
 
     def save_nifti(self, data, affine, filepath):
         import nibabel as nib

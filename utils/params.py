@@ -105,6 +105,7 @@ class TrainingParams:
     dropout: float = 0.0 # TODO
     lr: float = 1e-4
     min_lr: float = 0.0
+    max_lr: float = 1.0
     warmup_epochs: int = 20
     optim_weight_decay: float = 0.05
     

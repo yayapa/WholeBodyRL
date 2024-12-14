@@ -3,9 +3,9 @@ general:
   wandb_disabled: "false"
   # wandb_run_id: 
   freeze_encoder: False
-  resume_training: False
+  resume_training: True
   load_encoder: False
-  #ckpt_path: "your checkpoint"
+  ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/recon_0.7_small/07-12-2024_10-05-34/last.ckpt"
 
 
 data:
@@ -13,14 +13,14 @@ data:
   #sax_slice_num: 6 # 6 for 3D, 1 for 2D
   contrast_slice_num: 2
   #image_size: [128, 128]
-  #image_size: [224, 168, 352] #[224, 168, 363]
-  image_size: [224, 168, 360]
-  train_num_per_epoch: 1000
-  num_train: 32000
-  num_val: 2
+  #image_size: [224, 168, 360] #[224, 168, 363]
+  image_size: [220, 160, 360] # note that the dimension is permuted then to [360, 168, 224] (D, H, W) in axial view
+  train_num_per_epoch: 5000
+  num_train: 31799
+  num_val: 100
   num_test: 100
   num_workers: 12
-  batch_size: 6
+  batch_size: 1
   dataset_cls: WB3DWatFat
 
 
@@ -30,7 +30,7 @@ module:
   
   recon_hparams:
     enc_embed_dim: 1025 #1025
-    enc_depth: 6
+    enc_depth: 6 #6
     enc_num_heads: 5 #5
     dec_embed_dim: 1025 #1025
     dec_depth: 2
@@ -40,16 +40,22 @@ module:
     #patch_size: [25, 8, 8]
     #patch_size: [16, 14, 22]
     #patch_size: [8, 7, 11]
-    patch_size: [16, 14, 24]
+    #patch_size: [16, 14, 24]
+    #patch_size: [24, 14, 16]  # for [360, 168, 224]
+    #patch_size: [12, 7, 8]
+    patch_size: [18, 8, 10]
+    #mask_type: "random_roi"
     mask_type: "random_roi"
-    mask_ratio: 0.3
+    mask_ratio: 0.7 #0.25
     loss_types: ["mse"] # [mse]
     loss_weights: [1.0]
-    train_log_rate: 2
-    val_log_rate: 2
-    patch_in_channel: 2
+    train_log_rate: 1
+    val_log_rate: 1
+    patch_in_channels: 1
+    lr: 0.0001
+    max_lr: 0.001
 
 
 trainer:
-  max_epochs: 300
+  max_epochs: 100
   check_val_every_n_epoch: 5
