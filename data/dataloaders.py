@@ -16,6 +16,7 @@ import torch
 from torch.utils.data import Sampler
 import torch.distributed as dist
 import math
+from pytorch_lightning.callbacks import Callback
 
 class CMRDataModule(pl.LightningDataModule):
     def __init__(self, load_dir: str, processed_dir: str,  
@@ -200,7 +201,12 @@ class CMRDataModule(pl.LightningDataModule):
 
 
 
-
+class SetEpochCallback(Callback):
+    def on_train_epoch_start(self, trainer, pl_module):
+        datamodule = trainer.datamodule
+        if hasattr(datamodule, '_train_dataloader') and hasattr(datamodule._train_dataloader, 'sampler'):
+            if isinstance(datamodule._train_dataloader.sampler, RandomDistributedSampler):
+                datamodule._train_dataloader.sampler.set_epoch(trainer.current_epoch)
 
 
 class RandomDistributedSampler(Sampler):
@@ -323,11 +329,18 @@ class WBDataModule(pl.LightningDataModule):
             body_mask_dir=self.body_mask_dir
         )
 
+        print("Train dataset size: ", len(self.train_dset))
+        print("Train per epoch: ", self.train_num_per_epoch)
         if self.multi_gpu:
+            print("Using multi-gpu training")
+            print("RandomDistributedSampler is initialized with train_num_per_epoch: ", self.train_num_per_epoch)
+            per_gpu_batch_size = self.batch_size
             self._train_dataloader = DataLoader(self.train_dset,
-                                                batch_size=self.batch_size,
-                                                #sampler=RandomDistributedSampler(self.train_dset,
-                                                #                      num_samples=self.train_num_per_epoch),
+                                                batch_size=per_gpu_batch_size,
+                                                #sampler=RandomSampler(self.train_dset,
+                                                #                 num_samples=self.train_num_per_epoch),
+                                                sampler=RandomDistributedSampler(self.train_dset,
+                                                                      num_samples=self.train_num_per_epoch),
                                                 num_workers=self.num_workers,
                                                 pin_memory=True,
                                                 persistent_workers=self.num_workers > 0)

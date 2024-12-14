@@ -116,12 +116,54 @@ def pick_imgs_for_wandb(imgs):
         video = imgs[0]
     return video
 
-def imgs_to_wandb_video(imgs, scale=1, prep=False, in_channel=1):
-    """Process 3D+t images to wandb video format
-    imgs: [T, H, W] torch.Tensor or np.ndarray
-    prep: bool. Whether the input images are preprocess for logging.
-    video: [T, 3, H, W * 2] or [T, 3, H, W] np.ndarray
+
+def imgs_to_wandb_video(volumes, scale=1, prep=False, in_channel=1):
     """
+    Process (H, W, D) volumes into a wandb video-compatible format.
+
+    Args:
+        volumes: [H, W, D] torch.Tensor or np.ndarray
+        scale: float. Scaling factor for normalization (default is 1, no scaling).
+        prep: bool. Whether the input volumes are preprocessed for logging.
+        in_channel: int. Number of input channels (1 for grayscale, >1 for multi-channel).
+
+    Returns:
+        video_log: [D, 3, H, W] np.ndarray suitable for wandb video logging.
+    """
+    clip_range = (volumes.min(), volumes.max())
+    volumes = torch.clamp(volumes, min=clip_range[0], max=clip_range[1])
+
+    # Normalize to [0, 1]
+    volumes = (volumes - clip_range[0]) / (clip_range[1] - clip_range[0])
+
+    video = volumes
+
+    # Add channel dimension if single-channel
+    if in_channel == 1:
+        video = video.unsqueeze(-1)  # Shape [H, W, D, 1]
+
+    # Permute dimensions to [D, H, W, C]
+    #video = video.permute(2, 0, 1, 3)  # [D, H, W, C]
+
+    # Normalize and scale
+    #if scale != 1:
+    #    video = normalize_image(video)  # Assumes normalization returns PyTorch tensor
+    video = video * 255.0  # Scale to [0, 255]
+
+    # Cast to uint8
+    video = video.to(torch.uint8)
+
+    # Reshape to [D, 3, H, W] for wandb video
+    if in_channel == 1:
+        video = video.repeat(1, 1, 1, 3)  # Repeat channel to make RGB
+        video = video.permute(0, 3, 1, 2)  # Shape [D, 3, H, W]
+    else:
+        video = video.permute(0, 3, 1, 2)  # Already has channels
+
+    return video
+"""
+def imgs_to_wandb_video(imgs, scale=1, prep=False, in_channel=1):
+
     if prep:
         video = imgs
     else:
@@ -139,7 +181,7 @@ def imgs_to_wandb_video(imgs, scale=1, prep=False, in_channel=1):
     # Reshape to [T, 3, H, W]
     video_log = video_log.repeat(3, axis=1) if in_channel == 1 else video_log
     return video_log
-
+"""
 
 def imgs_to_wandb_image(imgs):
     """Process 3D+t images to wandb image format

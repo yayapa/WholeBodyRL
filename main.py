@@ -4,6 +4,7 @@ from datetime import datetime
 import os
 from pathlib import Path
 
+from matplotlib.dates import set_epoch
 import torch
 import wandb
 
@@ -18,6 +19,11 @@ from lightning import Trainer, seed_everything
 from lightning.pytorch.loggers import CSVLogger
 from lightning.pytorch.callbacks import ModelCheckpoint, BaseFinetuning
 from dotenv import load_dotenv
+
+from pytorch_lightning.callbacks import Callback
+from data.dataloaders import SetEpochCallback
+import torch.distributed as dist
+
 
 
 def parser_command_line():
@@ -67,7 +73,20 @@ def main():
     if params.general.wandb_run_id is not None:
         wandb_kwargs["id"] = params.general.wandb_run_id
     logger = CSVLogger(paths.log_folder)
-    wandb.init(project="WholeBodyRL", config=asdict(params), **wandb_kwargs,)
+
+    if multi_gpu and dist.is_initialized():
+        print("Multi GPU WANDB")
+        rank = dist.get_rank()
+        if rank == 0:
+            wandb.init(
+                project="WholeBodyRL",
+                config=asdict(params),
+                **wandb_kwargs,
+            )
+        else:
+            os.environ["WANDB_MODE"] = "disabled"  # Disable WandB for other ranks
+    else:
+        wandb.init(project="WholeBodyRL", config=asdict(params), **wandb_kwargs,)
     
 
     data_module = WBDataModule(
@@ -134,6 +153,7 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
     checkpoint_callback = ModelCheckpoint(dirpath=ckpt_dir, filename=ckpt_filename, monitor=monitor_metric, 
                                           mode=monitor_mode, save_top_k=5, save_last=True, verbose=True,)
+    set_epoch_callback = SetEpochCallback()
 
     print("Before trainer")
     # Initialize trainer
@@ -145,13 +165,21 @@ def main():
             fast_dev_run=False,
             limit_train_batches=1.0,
             limit_val_batches=1.0,
-            num_sanity_val_steps=2,
+            num_sanity_val_steps=1,
+        
             benchmark=True,
-            devices="auto",  # Automatically select all available GPUs or specify a number like `devices=2`
+            devices='auto',  # Automatically select all available GPUs or specify a number like `devices=2`
             strategy="ddp",  # Distributed Data Parallel (DDP) strategy for multi-GPU training
-            #use_distributed_sampler=False,
+            num_nodes=1,
+            #num_nodes=int(os.getenv("SLURM_JOB_NUM_NODES", 1)), 
+            use_distributed_sampler=False,
             **params.trainer.__dict__,
         )
+        print("MUTLI GPU")
+        print("num gpus:", torch.cuda.device_count())  # Should return 2
+        print("CUDA  available:", torch.cuda.is_available())
+        #import torch.distributed as dist
+        #print(f"DDP Backend: {dist.get_backend()}")
     else:
         trainer = Trainer(
             default_root_dir=paths.log_folder,
