@@ -1,6 +1,5 @@
 # Whole-body Representation Learning
 This repository contains the code used in the research paper: [Whole Heart 3D+T Representation Learning Through Sparse 2D Cardiac MR Images](https://link.springer.com/chapter/10.1007/978-3-031-72378-0_34#Abs1), accepted by MICCAI 2024. For more details, please refer to the paper.
-![Diagram](main_structure.png)
 
 ## Table of Contents
 - [Installation](#installation)
@@ -87,7 +86,7 @@ python3 main.py train \
 #### Embedding Extraction
 ```bash
 python3 main.py eval \
--c ./configs/config_reconstruction_wb.yaml \
+-c ./configs/config_reconstruction_emb_wb.yaml \
 -g mae_emb \
 -n mae_emb \
 --labels_file /path/to/labels.csv
