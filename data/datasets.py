@@ -64,6 +64,7 @@ class WB3DWatFat(AbstractDataset):
         super().__init__(*args, **kwargs)
         self.img_size = kwargs.get("img_size", (224, 168, 363))
         self.body_mask_dir = kwargs.get("body_mask_dir", None)
+        self.augmentations = kwargs.get("augmentations", None)
         self.slice_num = 2
 
 
@@ -86,15 +87,16 @@ class WB3DWatFat(AbstractDataset):
         image_nifti_wat = self._min_max_normalize(image_nifti_wat)
         image_nifti_fat = self._min_max_normalize(image_nifti_fat)
 
+
         transforms = tio.transforms.Compose(
             [
-                #tio.ZNormalization(),
                 tio.transforms.CropOrPad(self.img_size),
             ]
         )
         image_nifti_wat = transforms(image_nifti_wat)
         image_nifti_fat = transforms(image_nifti_fat)
         image = np.concatenate((image_nifti_wat, image_nifti_fat), axis=0)
+
 
         body_mask_path = os.path.join(self.body_mask_dir, str(self.labels.loc[idx, EID_COL]), "body_mask.nii.gz")
         body_mask = self._load_nifti_image(body_mask_path)
@@ -108,14 +110,11 @@ class WB3DWatFat(AbstractDataset):
         #print("mask ratio", np.sum(body_mask) / body_mask.size)
 
         # duplicate body mask for 2 channels
+        
         body_mask = body_mask.repeat(2, axis=0)
         body_mask = torch.from_numpy(body_mask).float()
         body_mask = body_mask.permute(0, 3, 2, 1)   # [2, 360, 168, 224]
-
-        #assert body_mask.shape == (2, 360, 168, 224)
-
-
-
+        
 
         if self.augmentation:
             image = self._apply_augmentation(image)
@@ -131,6 +130,7 @@ class WB3DWatFat(AbstractDataset):
         image = image.permute(0, 3, 2, 1) # [2, 363, 224, 168]
 
         #assert image.shape == (2, 360, 168, 224)
+        #print("eid and idx", self.labels.loc[idx, EID_COL], idx)
 
         return image, target_value, idx, body_mask
 
@@ -147,18 +147,38 @@ class WB3DWatFat(AbstractDataset):
         return int(self.labels[index].parent.name)
 
     def _apply_augmentation(self, im):
-        random_value = np.random.rand()
-        transforms = tio.transforms.Compose(
-                [
-                    tio.transforms.RandomFlip(axes=0, p=0.5),
-                    tio.transforms.RandomFlip(axes=1, p=0.5),
-                    tio.transforms.RandomFlip(axes=2, p=0.5),
-                    #tio.transforms.RandomBlur(p=0.5, std=np.min([random_value, 0.5])),
-                    #tio.transforms.RandomNoise(p=0.5, std=np.min([random_value, 0.5])),
-                ])
+        im = self._apply_mask_boxes_augmentation(im)
+        augmnentations_compose = self._get_augmentations_compose()
+        transforms = tio.transforms.Compose(augmnentations_compose)
 
         return transforms(im)
 
+    def  _get_augmentations_compose(self):
+        augmentations_compose = []
+        random_value = np.random.rand()
+        for augm in self.augmentations:
+            if augm == "random_flip":
+                augmentations_compose.append(tio.transforms.RandomFlip(axes=0, p=0.5))
+                augmentations_compose.append(tio.transforms.RandomFlip(axes=1, p=0.5))
+                augmentations_compose.append(tio.transforms.RandomFlip(axes=2, p=0.5))
+            elif augm == "random_blur":
+                augmentations_compose.append(tio.transforms.RandomBlur(p=0.5, std=np.min([random_value, 0.5])))
+            elif augm == "random_noise":
+                augmentations_compose.append(tio.transforms.RandomNoise(p=0.5, std=np.min([random_value, 0.5])))
+        return augmentations_compose
+    
+    def _apply_mask_boxes_augmentation(self, im):
+        if "mask_boxes" in self.augmentations:
+            nr_boxes = np.random.randint(0, 10)
+            # apply _mask_boxes to the water and fat images
+            image_nifti_wat = im[0, :, :, :]
+            image_nifti_fat = im[1, :, :, :]
+            image_nifti_wat = self._mask_boxes(image_nifti_wat, range_box_size=(20, 60), nr_boxes=nr_boxes)
+            image_nifti_fat = self._mask_boxes(image_nifti_fat, range_box_size=(20, 60), nr_boxes=nr_boxes)
+            im = np.stack((image_nifti_wat, image_nifti_fat), axis=0)
+        return im
+
+    
     def _min_max_normalize(self, image):
         """Applies min-max normalization to an image."""
         # Flatten the image to find min and max values
@@ -175,6 +195,18 @@ class WB3DWatFat(AbstractDataset):
 
     def get_view(self) -> int:
         return 2
+    
+    def _mask_boxes(self, image, range_box_size:Tuple, nr_boxes:int):
+        for _ in range(nr_boxes):
+            z = np.random.randint(0, image.shape[0])
+            y = np.random.randint(0, image.shape[1])
+            x = np.random.randint(0, image.shape[2])
+            z_size = np.random.randint(range_box_size[0], range_box_size[1])
+            y_size = np.random.randint(range_box_size[0], range_box_size[1])
+            x_size = np.random.randint(range_box_size[0], range_box_size[1])
+            image[z:z+z_size, y:y+y_size, x:x+x_size] = 0
+
+        return image
 
 
 class WB3DWatFat_Test(WB3DWatFat):

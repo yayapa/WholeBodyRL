@@ -1,10 +1,11 @@
 import os.path
 import time
 
+from IPython import embed
 import lightning.pytorch as pl
 import numpy as np
 import torch
-from torch import nn, optim
+from torch import embedding, nn, optim
 from torch.optim.lr_scheduler import CosineAnnealingWarmRestarts
 
 from networks.losses import ReconstructionCriterion
@@ -129,6 +130,11 @@ class ReconMAE(BasicModule):
         self.recon_head = nn.Linear(in_features=kwargs.get("dec_embed_dim"),
                                     out_features=self.patch_p_num,)
         self.reconstruction_criterion = ReconstructionCriterion(**kwargs)
+        self.generate_embeddings = kwargs.get("generate_embeddings", None)
+        print("generate_embeddings", self.generate_embeddings)
+        if self.generate_embeddings is not None:
+            self.all_embeddings = []
+            self.all_idx = [] 
         self.initialize_parameters()
         self.save_hyperparameters()
 
@@ -187,7 +193,9 @@ class ReconMAE(BasicModule):
         for blk in self.encoder:
             x = blk(x)
         x = self.encoder_norm(x)
-        return x
+        # return only cls_token
+        return x[:, :1, :]
+        #return x[:, :1, :] #check it cls_token 
     
     def forward_encoder(self, x, roi_mask=None):
         """Forward pass of encoder
@@ -206,22 +214,12 @@ class ReconMAE(BasicModule):
         x = x + enc_pos_embed[:, 1:, :]
 
         # Patchify binary mask to align with patch embeddings
-        #print("roi_mask before patchifying", roi_mask.shape)
-        roi_mask_patchified = patchify(roi_mask, patch_size=self.patch_size)  # [B, L]
-        #print("roi mask pathcified", roi_mask_patchified.shape)
-        roi_mask_patchified = torch.any(roi_mask_patchified > 0, dim=-1).float()  # Collapse patch volume to [N, L], 1 if any element > 0
-        # calculate number of patches with 1 in mask
-        #roi_ratio = roi_mask_patchified.sum(dim=-1) / roi_mask_patchified.shape[-1]
-        #print("roi_ratio:", roi_ratio)
-        #print("roi mask pathcified", roi_mask_patchified.shape)
 
-        #print("x shape", x.shape)
-        
-        # Mask patches: length -> length * mask_ratio
+        roi_mask_patchified = patchify(roi_mask, patch_size=self.patch_size)  # [B, L]
+
+        roi_mask_patchified = torch.any(roi_mask_patchified > 0, dim=-1).float()  # Collapse patch volume to [N, L], 1 if any element > 0
+
         x, mask, ids_restore = self.masker(x, roi_mask=roi_mask_patchified)
-        print("mask", torch.sum(mask))
-        print("ids_restore", ids_restore.shape)
-        print("ids_restore", ids_restore.shape)
 
         # Append cls token: (B, 1 + length * mask_ratio, embed_dim)
         cls_token = self.cls_token + enc_pos_embed[:, :1, :] # (1, 1, embed_dim)
@@ -316,7 +314,22 @@ class ReconMAE(BasicModule):
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        _ = self.training_step(batch, batch_idx, mode="test")
+        imgs, _, sub_idx, body_masks = batch
+        if self.generate_embeddings is not None:
+            embeddings = self.forward_encoder_eval(imgs)
+            self.all_embeddings.append(embeddings.cpu().numpy())
+            self.all_idx.append(sub_idx.cpu().numpy())
+        else:
+            _ = self.training_step(batch, batch_idx, mode="test")
+    def on_test_end(self):
+        if self.generate_embeddings is not None:
+            save_dir = os.path.dirname(self.generate_embeddings)
+            os.makedirs(save_dir, exist_ok=True)
+
+            all_embeddings = np.concatenate(self.all_embeddings, axis=0)
+            all_idx = np.concatenate(self.all_idx, axis=0)
+            np.savez_compressed(self.generate_embeddings, embeddings=all_embeddings, idx=all_idx)
+            print(f"Embeddings saved to {self.generate_embeddings}")
 
     def log_recon_metrics(self, loss_dict, psnr_value, mode="train"):
         for loss_name, loss_value in loss_dict.items():
@@ -324,32 +337,19 @@ class ReconMAE(BasicModule):
         self.module_logger.update_metric_item(f"{mode}/recon_psnr", psnr_value, mode=mode)
                
     def log_recon_videos(self, mask, pred_patches, gt_imgs, sub_idx, mode="train"):
-        #sub_path = eval(f"self.trainer.datamodule.{mode}_dset").subject_paths[sub_idx]
-        #sub_id = sub_path.parent.name
-        #print("sub_idx", sub_idx)
-        #print("sub_idx.item()", sub_idx.item())
-        #print("labels", eval(f"self.trainer.datamodule.{mode}_dset").labels)
         sub_id = eval(f"self.trainer.datamodule.{mode}_dset").labels["eid"].iloc[sub_idx.item()]
 
         # Extend batch dimension for calculation
         mask = mask[None]
         pred_patches = pred_patches[None]
         gt_imgs = gt_imgs[None]
-        # Prepare for wandb video logging: (B, S, T, H, W) -> (T, C, H, W)
-        #if self.mask_type in ["spatial", "outer_spatial"]:
-        #     mask_patches = mask.unsqueeze(-1).repeat(1, 1, gt_imgs.shape[2] * np.prod(self.patch_size))
-        #else:
-        #     mask_patches = mask.unsqueeze(-1).repeat(1, 1, np.prod(self.patch_size))
-        #print("mask shape", mask.shape)
-        mask_patches = mask.unsqueeze(-1).repeat(1, 1, np.prod(self.patch_size))
-        #print("mask shape", mask.shape)
-        mask_imgs = unpatchify(mask_patches, patch_size=self.patch_size, im_shape=gt_imgs.shape)
-        #mask_imgs = mask_imgs.squeeze(0)
-        #print("maks_img", mask_imgs.shape)
-        pred_imgs = unpatchify(pred_patches, im_shape=gt_imgs.shape, patch_size=self.patch_size)
-        # Select the first data in the batch for logging
 
-        #mask_img_log = imgs_to_wandb_video(mask_imgs[0])
+        mask_patches = mask.unsqueeze(-1).repeat(1, 1, np.prod(self.patch_size))
+
+        mask_imgs = unpatchify(mask_patches, patch_size=self.patch_size, im_shape=gt_imgs.shape)
+
+        pred_imgs = unpatchify(pred_patches, im_shape=gt_imgs.shape, patch_size=self.patch_size)
+
         mask_vis_path = "/u/home/sdm/GitHub/WholeBodyRL/mask_vis_path"
 
 
@@ -357,13 +357,6 @@ class ReconMAE(BasicModule):
         #self.save_nifti(gt_imgs[0][0], np.eye(4), os.path.join(mask_vis_path, "gt.nii.gz"))
         #self.save_nifti(mask_imgs[0][0], np.eye(4), os.path.join(mask_vis_path, "masked.nii.gz"))
 
-
-
-        # pred_img_log = imgs_to_wandb_video(pred_imgs[0])
-        # gt_img_log = imgs_to_wandb_video(gt_imgs[0])
-        #print("shape of gt_imgs", gt_imgs[0][0].shape)
-        #print("shape of pred_imgs", pred_imgs[0][0].shape)
-        #print("shape: ", torch.cat([gt_imgs[0][0], pred_imgs[0][0]], dim=2).shape)
         gt_wat_img_log = imgs_to_wandb_video(gt_imgs[0][0]).cpu().numpy()
         gt_fat_img_log = imgs_to_wandb_video(gt_imgs[0][1]).cpu().numpy()
         pred_wat_img_log = imgs_to_wandb_video(pred_imgs[0][0]).cpu().numpy()
@@ -377,19 +370,6 @@ class ReconMAE(BasicModule):
         self.module_logger.update_video_item(f"{mode}_video/mask_wat", sub_id, mask_img_wat_log, mode=mode)
         self.module_logger.update_video_item(f"{mode}_video/mask_fat", sub_id, mask_img_fat_log, mode=mode)
 
-        #gt_pred_img_log = imgs_to_wandb_video(torch.cat([gt_imgs[0][0], pred_imgs[0][0]], dim=2))
-        # tp cpu and numpy
-        #gt_pred_img_log = gt_pred_img_log.cpu().numpy()
-        # replaced_pred_img_log = replace_with_gt_wandb_video(pred_img_log, gt_img_log, mask_img_log)
-        #self.module_logger.update_video_item(f"{mode}_video/masks", sub_id, mask_img_log, mode=mode)
-        #self.module_logger.update_video_item(f"{mode}_video/pred_imgs", sub_id, gt_pred_img_log, mode=mode)
-        # self.module_logger.update_video_item(f"{mode}_video/pred_imgs_w_gt", sub_id, replaced_pred_img_log, mode=mode)
-
-        #sanity check patchify, mask and unpatchify the gt image
-        gt_patches = patchify(gt_imgs, patch_size=self.patch_size)
-        gt_patches = unpatchify(gt_patches, im_shape=gt_imgs.shape, patch_size=self.patch_size)
-        gt_patches = imgs_to_wandb_video(gt_patches[0][0]).cpu().numpy()
-        self.module_logger.update_video_item(f"{mode}_video/gt_patchified_unpatchified_wat", sub_id, gt_patches, mode=mode)
 
 
     def save_nifti(self, data, affine, filepath):

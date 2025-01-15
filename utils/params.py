@@ -1,6 +1,6 @@
 """Parameters for the module in a nested dataclass manner."""
 
-from dataclasses import asdict, dataclass, fields
+from dataclasses import asdict, dataclass, fields, field
 import yaml
 from typing import Any, Dict, Optional, Tuple
 
@@ -45,6 +45,8 @@ class DataParams:
     contrast_slice_num: int = 2
     time_frame: int = 50
     image_size: Tuple[int, ...] = (128, 128)
+    # Use default_factory for mutable types
+    augmentations: list = field(default_factory=lambda: ["random_flip"])
     
 
 @dataclass

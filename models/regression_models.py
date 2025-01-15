@@ -1,3 +1,4 @@
+import pandas as pd
 import torch
 from torch import nn
 from timm.models.vision_transformer import Block
@@ -6,6 +7,7 @@ from models.reconstruction_models import BasicModule
 from networks.decoders import LinearDecoder
 from networks.losses import RegressionCriterion
 from utils.model_related import PatchEmbed, sincos_pos_embed
+import torchvision.models.video as models
 
 
 class RegrMAE(BasicModule):
@@ -45,6 +47,7 @@ class RegrMAE(BasicModule):
         elif self.regressor_type == "cls_token":
             self.regressor = nn.AdaptiveAvgPool2d((1, 1))
         self.regression_criterion = RegressionCriterion(**kwargs)
+        self.test_preds = {"sub_idx": [], "pred": [], "target": []}
         self.save_hyperparameters()
     
     def initialize_parameters(self):        
@@ -117,10 +120,13 @@ class RegrMAE(BasicModule):
     def forward(self, imgs):
         latent = self.forward_encoder(imgs)
         x = self.forward_decoder(latent)
+        x = x.view(-1)  # Flatten the output for regression
         return x
     
     def training_step(self, batch, batch_idx, mode="train"):
-        imgs, values, sub_idx = batch
+        imgs, values, sub_idx, _ = batch
+        imgs = imgs.float()  # Convert to float
+        values = values.float()  # Convert to float
         
         pred_values = self.forward(imgs)
         loss, mae = self.regression_criterion(pred_values, values)
@@ -129,6 +135,12 @@ class RegrMAE(BasicModule):
         self.log_regr_metrics(loss, mae, mode=mode)
         if mode == "val":
             self.log_dict({f"{mode}_MAE": mae}) # For checkpoint tracking # TODO 
+        elif mode == "test":
+            # save predictions for test set
+            self.test_preds["sub_idx"].extend(sub_idx.cpu().numpy().tolist())
+            self.test_preds["pred"].extend(pred_values.cpu().numpy().tolist())
+            self.test_preds["target"].extend(values.cpu().numpy().tolist())
+
         return loss
         
     @torch.no_grad()
@@ -138,10 +150,127 @@ class RegrMAE(BasicModule):
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         _ = self.training_step(batch, batch_idx, mode="test")
+
+    def on_test_end(self):
+        # Save predictions to csv
+        df = pd.DataFrame(self.test_preds)
+        print("save test set predictions in ", self.logger.log_dir)
+        df.to_csv(self.logger.log_dir + "/test_preds.csv", index=False)
         
     def log_regr_metrics(self, loss, mae, mode="train"):
         self.module_logger.update_metric_item(f"{mode}/regr_loss", loss.detach().item(), mode=mode)
         self.module_logger.update_metric_item(f"{mode}/mae", mae, mode=mode)
+
+
+from torchvision.models.video import r3d_18
+from torchvision.models.video import R3D_18_Weights
+
+class ResNet18Module3D(BasicModule):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        val_dataset = kwargs.get("val_dset")
+        self.img_shape = val_dataset[0][0].shape  # [C, D, H, W]
+        self.network = self._initial_network()
+        self.regression_criterion = RegressionCriterion(**kwargs)
+        self.test_preds = {"sub_idx": [], "pred": [], "target": []}
+        self.save_hyperparameters()
+    
+    def _initial_network(self):
+        # Create the ResNet3D model
+        _network = r3d_18(weights=R3D_18_Weights.DEFAULT)
+        
+        # Adjust the stem for 2 contrasts (fat and water)
+        _network.stem = nn.Sequential(
+            nn.Conv3d(
+                in_channels=2,  # Two contrasts as input channels
+                out_channels=64,
+                kernel_size=(7, 7, 7),
+                stride=(2, 2, 2),
+                padding=(3, 3, 3),
+                bias=False
+            ),
+            nn.BatchNorm3d(64),
+            nn.ReLU(inplace=True),
+            nn.MaxPool3d(kernel_size=(3, 3, 3), stride=(2, 2, 2), padding=(1, 1, 1))
+        )
+        
+        # Replace the fully connected layer for regression
+        linear_layer_size = _network.fc.in_features
+        _network.fc = nn.Linear(linear_layer_size, 1)  # Output 1 regression value
+        
+        return _network
+    
+    def forward(self, x):
+        """
+        Forward pass for the network.
+        Args:
+            x: [B, C, D, H, W] where C=2 (contrasts), D=depth, H=height, W=width
+        """
+        x = self.network(x)  # Forward through ResNet3D
+        x = x.view(-1)  # Flatten the output for regression
+        return x
+    
+    def training_step(self, batch, batch_idx, mode="train"):
+        """
+        Handles training, validation, and testing steps.
+        Args:
+            batch: The data batch (images and values)
+            batch_idx: Batch index
+            mode: The mode of operation ('train', 'val', 'test')
+        """
+        imgs, values, sub_idx, _ = batch  # imgs: [B, 2, D, H, W], values: [B]
+        imgs = imgs.float()  # Convert to float
+        values = values.float()  # Convert to float
+
+        pred_values = self.forward(imgs)
+        loss, mae = self.regression_criterion(pred_values, values)
+        
+        # Log metrics
+        self.log_regr_metrics(loss, mae, mode=mode)
+        if mode == "val":
+            self.log_dict({f"{mode}_MAE": mae})  # Track validation MAE for checkpoints
+        elif mode == "test":
+            # save predictions for test set
+            self.test_preds["sub_idx"].extend(sub_idx.cpu().numpy().tolist())
+            self.test_preds["pred"].extend(pred_values.cpu().numpy().tolist())
+            self.test_preds["target"].extend(values.cpu().numpy().tolist())
+        return loss
+    
+    @torch.no_grad()
+    def validation_step(self, batch, batch_idx):
+        _ = self.training_step(batch, batch_idx, mode="val")
+
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        _ = self.training_step(batch, batch_idx, mode="test")
+    
+    def on_test_end(self):
+        # Save predictions to csv
+        df = pd.DataFrame(self.test_preds)
+        print("log dir: ", self.logger.log_dir)
+        df.to_csv(self.logger.log_dir + "/test_preds.csv", index=False)
+        
+    def log_regr_metrics(self, loss, mae, mode="train"):
+        """
+        Logs regression metrics for monitoring.
+        """
+        self.module_logger.update_metric_item(f"{mode}/regr_loss", loss.detach().item(), mode=mode)
+        self.module_logger.update_metric_item(f"{mode}/mae", mae, mode=mode)
+
+    def configure_optimizers(self):
+        optimizer = torch. optim.Adam(self.parameters(), lr=self.lr)
+        #scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer=optimizer, mode='min', factor=0.1, patience=3, min_lr=1e-6, verbose=True)
+
+        #lr_scheduler = {
+        #    'monitor': 'val/mae',
+        #    'scheduler': scheduler,
+        #    'interval': 'epoch',
+        #    'frequency': 1
+        #}
+        return optimizer
+        #return [optimizer], [lr_scheduler]
+
 
 
 class ResNet18Module(BasicModule):
@@ -168,7 +297,7 @@ class ResNet18Module(BasicModule):
         return x
     
     def training_step(self, batch, batch_idx, mode="train"):
-        imgs, values, sub_idx = batch
+        imgs, values, sub_idx, _ = batch
         
         pred_values = self.forward(imgs)
         loss, mae = self.regression_criterion(pred_values, values)
@@ -199,3 +328,67 @@ class ResNet50Module(ResNet18Module):
         _network = resnet50(pretrained=False, num_classes=1)
         _network.conv1 = torch.nn.Conv2d(in_channels=S*T, out_channels=64, kernel_size=7, stride=2, padding=3, bias=False)
         return _network
+    
+"""
+import torchvision.models.video as models
+
+class ResNet18Module3D(BasicModule):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        
+        val_dataset = kwargs.get("val_dset")
+        self.img_shape = val_dataset[0][0].shape  # [C, D, H, W]
+        self.network = self._initial_network()
+        self.regression_criterion = RegressionCriterion(**kwargs)
+        self.save_hyperparameters()
+    
+    def _initial_network(self):
+        # Use a 3D ResNet18 (pretrained weights if suitable)
+        _network = models.r3d_18(pretrained=False)
+        _network.fc = torch.nn.Linear(_network.fc.in_features, 1)  # Output 1 regression value
+        
+        # Adjust first conv layer for 2 input channels
+        _network.stem[0] = torch.nn.Conv3d(
+            in_channels=2,  # 2 contrasts
+            out_channels=64,
+            kernel_size=(7, 7, 7),
+            stride=(2, 2, 2),
+            padding=(3, 3, 3),
+            bias=False,
+        )
+        return _network
+    
+    def forward(self, x):
+        # x: [B, C, D, H, W]
+        x = self.network(x)  # Forward through 3D ResNet
+        x = torch.relu(x)    # [B, 1]
+        return x
+    
+    def training_step(self, batch, batch_idx, mode="train"):
+        imgs, values, sub_idx, _ = batch
+        imgs = imgs.float()  # Convert to float
+        values = values.float()  # Convert to float
+        values = values.view(-1, 1)  # [B, 1]
+        
+        pred_values = self.forward(imgs)
+        loss, mae = self.regression_criterion(pred_values, values)
+        
+        # Logging metrics and median
+        self.log_regr_metrics(loss, mae, mode=mode)
+        if mode == "val":
+            self.log_dict({f"{mode}_MAE": mae})  # For checkpoint tracking
+        return loss
+        
+    @torch.no_grad()
+    def validation_step(self, batch, batch_idx):
+        _ = self.training_step(batch, batch_idx, mode="val")
+
+    @torch.no_grad()
+    def test_step(self, batch, batch_idx):
+        _ = self.training_step(batch, batch_idx, mode="test")
+        
+    def log_regr_metrics(self, loss, mae, mode="train"):
+        self.module_logger.update_metric_item(f"{mode}/regr_loss", loss.detach().item(), mode=mode)
+        self.module_logger.update_metric_item(f"{mode}/mae", mae, mode=mode)
+"""
+

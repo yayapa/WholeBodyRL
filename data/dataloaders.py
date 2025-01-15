@@ -255,8 +255,8 @@ class WBDataModule(pl.LightningDataModule):
                  dataset_cls: Dataset = AbstractDataset, load_seg: bool = False,
                  num_train: int = 1000, num_val: int = 100, num_test: int = 100,
                  train_num_per_epoch: int = 1000,
-                 all_value_names: list[str] = ["Age"],
-                 target_value_name: str = "Age",
+                 all_value_names: list[str] = ["age"],
+                 target_value_name: str = "age",
                  batch_size: int = 16,
                  num_workers: int = 8,
                  image_size: list[int] = [224, 168, 363],
@@ -265,6 +265,8 @@ class WBDataModule(pl.LightningDataModule):
                  replace_processed: bool = False,
                  body_mask_dir: str = None,
                  multi_gpu: bool = False,
+                 labels_file: str = "labels.csv",
+                 augmentations: list = ["random_flip"],
                  **kwargs):
         super().__init__()
 
@@ -292,9 +294,13 @@ class WBDataModule(pl.LightningDataModule):
         self.num_cases = num_train + num_val + num_test
         self.body_mask_dir = body_mask_dir
         self.multi_gpu = multi_gpu
+        self.labels_file = labels_file
+        self.augmentations = augmentations
+        print("Using augmentations: ", self.augmentations)
 
     def setup(self, stage):
-        labels = pd.read_csv(os.path.join(self.labels_folder, "labels.csv"))
+
+        labels = pd.read_csv(os.path.join(self.labels_folder, self.labels_file))
         labels_train = labels[labels["split"] == "train"]
         labels_val = labels[labels["split"] == "val"]
         labels_test = labels[labels["split"] == "test"]
@@ -310,7 +316,8 @@ class WBDataModule(pl.LightningDataModule):
             load_dir=self.load_dir,
             augs=self.augment,
             img_size=self.image_size,
-            body_mask_dir=self.body_mask_dir
+            body_mask_dir=self.body_mask_dir,
+            augmentations=self.augmentations
         )
         self.val_dset = eval(f'{self.dataset_cls}_Test')(
             labels=labels_val,
@@ -318,7 +325,8 @@ class WBDataModule(pl.LightningDataModule):
             load_dir=self.load_dir,
             augs=self.augment,
             img_size=self.image_size,
-            body_mask_dir=self.body_mask_dir
+            body_mask_dir=self.body_mask_dir,
+            augmentations=self.augmentations
         )
         self.test_dset = eval(f'{self.dataset_cls}_Test')(
             labels=labels_test,
@@ -326,11 +334,12 @@ class WBDataModule(pl.LightningDataModule):
             load_dir=self.load_dir,
             augs=self.augment,
             img_size=self.image_size,
-            body_mask_dir=self.body_mask_dir
+            body_mask_dir=self.body_mask_dir,
+            augmentations=self.augmentations
         )
 
-        print("Train dataset size: ", len(self.train_dset))
-        print("Train per epoch: ", self.train_num_per_epoch)
+        #print("Train dataset size: ", len(self.train_dset))
+        #print("Train per epoch: ", self.train_num_per_epoch)
         if self.multi_gpu:
             print("Using multi-gpu training")
             print("RandomDistributedSampler is initialized with train_num_per_epoch: ", self.train_num_per_epoch)

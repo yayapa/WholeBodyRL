@@ -10,7 +10,7 @@ import wandb
 
 from data.dataloaders import WBDataModule
 from models.reconstruction_models import ReconMAE
-from models.regression_models import RegrMAE, ResNet18Module, ResNet50Module
+from models.regression_models import RegrMAE, ResNet18Module, ResNet18Module3D, ResNet50Module
 from models.segmentation_models import SegMAE
 from utils.data_related import get_data_paths
 from utils.params import load_config_from_yaml
@@ -30,6 +30,8 @@ def parser_command_line():
     "Define the arguments required for the script"
     parser = argparse.ArgumentParser(description="Masked Autoencoder Downstream Tasks",
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    #parser.add_argument("--labels_file", type=str, default="labels.csv", help="Path to the labels file")
+    
     subparser = parser.add_subparsers(dest="pipeline", help="pipeline to run")
     # Arguments for training
     parser_train = subparser.add_parser("train", help="train the model")
@@ -37,11 +39,16 @@ def parser_command_line():
     parser_train.add_argument("-g", "--wandb_group_name", default=None, help="specify the name of the group")
     parser_train.add_argument("-n", "--wandb_run_name", default=None, help="specify the name of the experiment")
     parser_train.add_argument("-m", "--multi_gpu", default=False, action="store_true", help="use multiple GPUs")
+    parser_train.add_argument("--labels_file", type=str, default="labels.csv", help="Path to the labels file")
     # Arguments for evaluation
     parser_eval = subparser.add_parser("eval", help="evaluate the model")
     parser_eval.add_argument("-c", "--config", help="config file (.yml) containing the hyper-parameters for inference.")
     parser_eval.add_argument("-g", "--wandb_group_name", default=None, help="specify the name of the group")
     parser_eval.add_argument("-n", "--wandb_run_name", default=None, help="specify the name of the experiment")
+    parser_eval.add_argument("--generate_embeddings", type=str, default=None, 
+                             help="Generate and save embeddings during testing. Specify output file (e.g., embeddings.npz).")
+    parser_eval.add_argument("--generate_predictions", type=str, default=None, help="Generate and save predictions for test dataset in csv file. Specify output file (e.g., predictions.csv).")
+    parser_eval.add_argument("--labels_file", type=str, default="labels.csv", help="Path to the labels file")
     return parser.parse_args()
 
 
@@ -56,7 +63,17 @@ def main():
     except AttributeError:
         config_path = None
     params = load_config_from_yaml(config_path)
-    multi_gpu = args.multi_gpu
+    if args.pipeline == "train" and args.multi_gpu:
+        multi_gpu = True
+    else:
+        multi_gpu = False
+    if args.pipeline == "eval":
+        print("generate_embeddings", args.generate_embeddings)
+        params.module.training_params.__dict__["generate_embeddings"] = args.generate_embeddings
+        params.module.training_params.__dict__["generate_predictions"] = args.generate_predictions
+        # Remove invalid argument if present
+        #params.trainer.__dict__.pop("generate_embeddings", None)
+        #print("params.module.training_params.__dict__", params.module.training_params.__dict__["generate_embeddings"])
     paths = get_data_paths()
     os.environ["WANDB_DISABLED"] = params.general.wandb_disabled
     #os.environ["CUDA_VISIBLE_DEVICES"] = "0" # Configure accelerator and devices
@@ -94,13 +111,14 @@ def main():
         labels_folder=paths.labels_folder,
         body_mask_dir=paths.body_mask_folder,
         multi_gpu=multi_gpu,
+        labels_file=args.labels_file,
         **params.data.__dict__
     )
     data_module.setup("fit")
 
     # Initialze lighting module
     module_LUT = {"reconstruction": [ReconMAE],
-                  "regression": [RegrMAE, ResNet18Module, ResNet50Module],
+                  "regression": [RegrMAE, ResNet18Module, ResNet50Module, ResNet18Module3D],
                   "segmentation": [SegMAE]}
     if params.module.task_idx == 0:
         module_cls = module_LUT["reconstruction"][params.module.module_idx]
@@ -117,6 +135,7 @@ def main():
     print("Before model load")
     model = module_cls(val_dset=data_module.val_dset, **module_params)
     print("After model load")
+    print("ckpt path:", params.general.ckpt_path)
     
     # Check the resuming and loading of the checkpoints
     resume_ckpt_path = None
@@ -166,12 +185,10 @@ def main():
             limit_train_batches=1.0,
             limit_val_batches=1.0,
             num_sanity_val_steps=1,
-        
             benchmark=True,
             devices='auto',  # Automatically select all available GPUs or specify a number like `devices=2`
             strategy="ddp",  # Distributed Data Parallel (DDP) strategy for multi-GPU training
             num_nodes=1,
-            #num_nodes=int(os.getenv("SLURM_JOB_NUM_NODES", 1)), 
             use_distributed_sampler=False,
             **params.trainer.__dict__,
         )
@@ -190,16 +207,19 @@ def main():
             limit_val_batches=1.0,
             num_sanity_val_steps=2,
             benchmark=True,
-
             **params.trainer.__dict__,
         )
+        #if args.pipeline == "eval":
+        #    model.generate_embeddings = args.generate_embeddings
+        #    model.all_embeddings = []
+        #    model.all_idx = []
     print("Before fit")
 
     if args.pipeline == "train":
         trainer.fit(model, datamodule=data_module, ckpt_path=resume_ckpt_path)
         trainer.test(model, datamodule=data_module)
     elif args.pipeline == "eval":
-        trainer.test(model, datamodule=data_module)
+        trainer.test(model, datamodule=data_module, ckpt_path=params.general.ckpt_path)
     wandb.finish() # Finish logging
 
 

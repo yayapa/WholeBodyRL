@@ -1,0 +1,48 @@
+general:
+  seed: 1
+  wandb_disabled: "false"
+  # wandb_run_id: zfj1aw9x
+  freeze_encoder: False
+  resume_training: False
+  load_encoder: False
+  #ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/mae_multi_recon_0.7/21-12-2024_00-19-47/model-epoch=299-val_PSNR=32.18.ckpt"
+
+data:
+  replace_processed: False
+  image_size: [220, 160, 360]
+  train_num_per_epoch: 2841
+  num_train: 2841
+  num_val: 712
+  num_test: 0
+  num_workers: 4
+  batch_size: 1
+  dataset_cls: WB3DWatFat
+  target_value_name: "age" # "Age", "LVM (g)", "RAEF (%)", "RVEF (%)", "RVEDV (mL)", "LASV (mL)"
+
+
+module:
+  task_idx: 1 # reconstrucion: 0, regression: 1, segmentation: 2
+  module_idx: 0 # RegrMAE: 0, ResNet18: 1, ResNet50: 2
+  
+  regr_hparams:
+    enc_embed_dim: 1025
+    enc_depth: 6
+    enc_num_heads: 5
+    dec_embed_dim: 256
+    dec_depth: 2
+    regressor_type: "cls_token" # "linear", "cls_token"
+
+  training_params:
+    lr: 0.00001
+    patch_size: [15, 10, 10]
+    mask_type: "random_roi"
+    mask_ratio: 0.0
+    loss_types: ["huber"] # [mse]
+    loss_weights: [1.0]
+    train_log_rate: 2
+    val_log_rate: 2
+
+
+trainer:
+  max_epochs: 100
+  check_val_every_n_epoch: 5

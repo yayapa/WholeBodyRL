@@ -203,6 +203,8 @@ class Masker:
         self.mask_ratio = mask_ratio
         if mask_type == "random_roi":
             self.masking_strategy = self.random_masking_within_roi
+        elif mask_type == "random_roi_blockwise":
+            self.masking_strategy = self.random_masking_within_roi_blockwise
         elif mask_type == "random":
             self.masking_strategy = self.random_masking
         else:
@@ -237,7 +239,7 @@ class Masker:
         mask: [N, L], binary mask
         ids_restore: [N, L], indices to restore the original order
         """
-        print("Ranodm Masking")
+        #print("Ranodm Masking")
         N, L, D = input_size  # batch, length, dim
         len_keep = int(L * (1 - self.mask_ratio))
         
@@ -292,7 +294,7 @@ class Masker:
             ids_restore: [N, L], indices to restore the original order.
             ids_keep: [N, len_keep], indices of kept patches.
         """
-        print("Random Masking within ROI")
+        #print("Random Masking within ROI")
 
         num_roi_patches = torch.sum(roi_mask, dim=1)
 
@@ -322,13 +324,7 @@ class Masker:
             shuffled_indices = roi_indices[torch.randperm(len(roi_indices))]
 
             # Mask the first `num_to_mask` ROI patches
-            #print("num_to_mask, num_roi_indices", num_to_mask, len(roi_indices))
             num_to_mask_i = min(num_to_mask, len(roi_indices))  # Limit to the number of available ROI patches
-            if num_to_mask > len(roi_indices):
-                print("Num to mask is greater than the number of available ROI patches.")
-            else:
-                print("mask fraction: ", num_to_mask_i / len(roi_indices))
-            #num_to_mask_i = int(num_to_mask[i].item())
             mask[i, shuffled_indices[:num_to_mask_i]] = 1  # Set these patches as masked
 
         # Generate ids_restore for reordering patches
@@ -341,6 +337,71 @@ class Masker:
         ids_keep = ids_keep.reshape(N, -1)  # Reshape to [N, len_keep]
 
         return mask, ids_restore, ids_keep
+    
+    def random_masking_within_roi_blockwise(self, input_size, device, roi_mask, **kwargs):
+        """
+        Perform random masking only within the ROI region defined by `roi_mask`.
+        Args:
+            input_size: Tuple[int, int, int], dimensions of the input sequence (e.g., [N, L, D]).
+            device: torch.device.
+            roi_mask: [N, 2 * L], binary mask indicating ROI patches for both contrasts.
+
+        Returns:
+            mask: [N, 2 * L], binary mask (0 is keep, 1 is masked).
+            ids_restore: [N, 2 * L], indices to restore the original order.
+            ids_keep: [N, len_keep], indices of kept patches.
+        """
+        print("Random Masking within ROI blockwise")
+        N, L, D = input_size  # Batch size, total patches, embedding dimension
+        num_patches_per_channel = L // 2  # Divide total patches equally for two channels
+
+        # Reshape the mask to separate channels
+        roi_mask = roi_mask.reshape(N, 2, num_patches_per_channel)  # [N, 2, num_patches_per_channel]
+
+
+        # Verify that both channels have identical masks
+        assert torch.all(roi_mask[:, 0, :] == roi_mask[:, 1, :]), "Masks for both channels must be identical."
+        roi_mask_collapsed = roi_mask[:, 0, :]  # Use only one channel's mask
+
+        # Number of ROI patches per sample
+        num_roi_patches = torch.sum(roi_mask_collapsed, dim=1)  # [N]
+
+        # Determine the number of patches to mask
+        num_to_mask = (num_roi_patches * self.mask_ratio).long()
+
+        # Initialize mask as all zeros (unmasked)
+        mask_per_channel = torch.zeros([N, num_patches_per_channel], device=device)
+
+        for i in range(N):
+            # Get indices of ROI patches
+            roi_indices = torch.nonzero(roi_mask_collapsed[i], as_tuple=True)[0]
+
+            if len(roi_indices) == 0:
+                raise ValueError(f"Sample {i} has no ROI patches to mask.")
+
+            # Shuffle ROI indices
+            shuffled_indices = roi_indices[torch.randperm(len(roi_indices))]
+
+            # Mask the first `num_to_mask` ROI patches
+            num_to_mask_i = min(num_to_mask[i].item(), len(roi_indices))
+            mask_per_channel[i, shuffled_indices[:num_to_mask_i]] = 1
+
+        # Repeat the mask for both channels
+        mask = mask_per_channel.unsqueeze(1).repeat(1, 2, 1)  # [N, 2, num_patches_per_channel]
+        assert mask[:, 0, :].equal(mask[:, 1, :]), "Masks for both channels must be identical."
+        mask = mask.reshape(N, L)  # Flatten back to [N, L]
+
+        # Generate ids_restore for reordering patches
+        noise = torch.rand(N, L, device=device)
+        ids_shuffle = torch.argsort(noise, dim=1)
+        ids_restore = torch.argsort(ids_shuffle, dim=1)
+
+        # Recompute ids_keep: Indices where mask == 0 (patches to keep)
+        ids_keep = torch.nonzero(mask == 0, as_tuple=True)[1]
+        ids_keep = ids_keep.reshape(N, -1)  # Reshape to [N, len_keep]
+
+        return mask, ids_restore, ids_keep
+
 
 
 
