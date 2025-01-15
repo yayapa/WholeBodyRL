@@ -1,21 +1,6 @@
-# Whole Heart 3D+T Representation Learning Through Sparse 2D Cardiac MR Images
-Yundi Zhang, Chen Chen, Suprosanna Shit, Sophie Starck, Daniel Rueckert, and Jiazhen Pan
-
+# Whole-body Representation Learning
 This repository contains the code used in the research paper: [Whole Heart 3D+T Representation Learning Through Sparse 2D Cardiac MR Images](https://link.springer.com/chapter/10.1007/978-3-031-72378-0_34#Abs1), accepted by MICCAI 2024. For more details, please refer to the paper.
 ![Diagram](main_structure.png)
-## Description
-In this project, we introduce a novel **self-supervised learning** framework for generating comprehensive **3D+T representations of the whole heart** using sparse 2D cardiac MRI sequences. Key features include:
-- Utilizes masked imaging modeling to uncover correlations between spatial and temporal patches across cardiac MRI stacks
-- Learns meaningful heart representations without requiring labeled data
-- Demonstrates robustness and consistency even when some MRI planes are missing
-- Trained on 14,000 unlabeled cardiac MRI scans from UK Biobank and evaluated on 1,000 annotated scans for downstream tasks
-- Outperforms baselines on tasks requiring comprehensive 3D+T cardiac information:
-    - Cardiac phenotype prediction (e.g. ejection fraction, ventricle volume)
-    - Multi-plane/multi-frame cardiac MRI segmentation
-
-The learned representations can be directly applied to various downstream cardiac analysis tasks. The method's ability to handle incomplete inputs and integrate spatiotemporal information from sparse MRI planes makes it promising for practical clinical applications.
-
-We demonstrate the potential for developing more efficient and robust cardiac MRI analysis pipelines using self-supervised representation learning approaches.
 
 ## Table of Contents
 - [Installation](#installation)
@@ -64,55 +49,12 @@ Before you begin, ensure you have met the following requirements:
     mv .env.name .env
     ```
 
-## Data File Structure
-This project uses NIfTI files to store imaging data. For each subject, the data is organized in a specific folder structure with various NIfTI files for different types of images and their corresponding segmentations.
+## Changes compared to the Yundi's code
+    - New Whole-body Dataloader
+    - Masking the ROI and reconstruction of it
 
-#### File Organization
 
-For each subject, the data is contained in a single folder. The folder includes:
 
-- **Short-axis (SAX) Images:**
-  - `sa.nii.gz`: The short-axis images.
-  - `seg_sa.nii.gz`: The segmentation maps for the short-axis images.
-
-- **Long-axis (LAX) Images:**
-  - `la_2ch.nii.gz`: The long-axis images in the 2-chamber view.
-  - `la_3ch.nii.gz`: The long-axis images in the 3-chamber view.
-  - `la_4ch.nii.gz`: The long-axis images in the 4-chamber view.
-
-#### Example Directory Structure
-
-Here is an example of how the data should be organized for one subject:
-```bash
-data/
-│
-└── subject1/
-    ├── sa.nii.gz
-    ├── seg_sa.nii.gz
-    ├── la_2ch.nii.gz
-    ├── la_3ch.nii.gz
-    └── la_4ch.nii.gz
-```
-#### Processed image data
-This project uses `.npz` files to store processed image data. Each `.npz` file contains a dictionary with specific keys, where each key corresponds to a NumPy array. The arrays have the shape `(H, W, S, T)` where  S is the number of slices in the volume. Each `.npz` file contains the following keys:
-
-- **`sax`**: Short-axis images.
-- **`lax`**: Long-axis images.
-- **`seg_sax`**: Segmentation maps for short-axis images.
-- **`seg_lax`**: Segmentation maps for long-axis images.
-
-#### Example Structure fo preprocessed data
-
-The `.npz` file contains a dictionary like this:
-
-```python
-{
-  "sax": np.array of shape (H, W, S, T),
-  "lax": np.array of shape (H, W, S, T),
-  "seg_sax": np.array of shape (H, W, S, T),
-  "seg_lax": np.array of shape (H, W, S, T)
-}
-```
 
 
 ## Usage
@@ -128,25 +70,27 @@ This project supports three tasks: **Pertaining**, **Segmentation**, and **Regre
 ```bash
 source .env
 python3 main.py train \
--c ./configs/config_reconstruction.yaml \
+-c ./configs/config_reconstruction_wb.yaml \
 -g your_wandb_group_name \
 -n your_wandb_job_name
 ```
-#### Segmentation
-```bash
-source .env
-python3 main.py train \
--c ./configs/config_segmentation.yaml \
--g your_wandb_group_name \
--n your_wandb_job_name
 ```
 #### Regression
 ```bash
 source .env
 python3 main.py train \
--c ./configs/config_regression.yaml \
+-c ./configs/config_regression_age.yaml \
 -g your_wandb_group_name \
 -n your_wandb_job_name
+```
+
+#### Embedding Extraction
+```bash
+python3 main.py eval \
+-c ./configs/config_reconstruction_wb.yaml \
+-g mae_emb \
+-n mae_emb \
+--labels_file /path/to/labels.csv
 ```
 
 ## License
