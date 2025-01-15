@@ -1,0 +1,52 @@
+general:
+  seed: 1
+  wandb_disabled: "true"
+  # wandb_run_id: zfj1aw9x
+  freeze_encoder: False
+  resume_training: False
+  load_encoder: False
+  #ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/test/04-01-2025_19-36-16/model-epoch=099-val_MAE=3.26.ckpt"
+  #ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/regr_age_resnet/09-01-2025_23-49-42/model-epoch=014-val_MAE=4.04.ckpt"
+  #ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/regr_age_mae/09-01-2025_16-51-40/model-epoch=099-val_MAE=3.49.ckpt"
+  ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/regr_age_resnet/09-01-2025_23-49-42/model-epoch=099-val_MAE=3.12.ckpt"
+  
+
+data:
+  replace_processed: False
+  image_size: [220, 160, 360]
+  train_num_per_epoch: 2841
+  num_train: 0
+  num_val: 0
+  num_test: 2841
+  num_workers: 4
+  batch_size: 1
+  dataset_cls: WB3DWatFat
+  target_value_name: "age" # "Age", "LVM (g)", "RAEF (%)", "RVEF (%)", "RVEDV (mL)", "LASV (mL)"
+
+
+module:
+  task_idx: 1 # reconstrucion: 0, regression: 1, segmentation: 2
+  module_idx: 3 # RegrMAE: 0, ResNet18: 1, ResNet50: 2
+  
+  regr_hparams:
+    enc_embed_dim: 1025
+    enc_depth: 6
+    enc_num_heads: 5
+    dec_embed_dim: 256
+    dec_depth: 2
+    regressor_type: "cls_token" # "linear", "cls_token"
+
+  training_params:
+    lr: 0.00001
+    patch_size: [15, 10, 10]
+    mask_type: "random_roi"
+    mask_ratio: 0.7
+    loss_types: ["huber"] # [mse]
+    loss_weights: [1.0]
+    train_log_rate: 2
+    val_log_rate: 2
+
+
+trainer:
+  max_epochs: 100
+  check_val_every_n_epoch: 5
