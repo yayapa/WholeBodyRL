@@ -1,0 +1,53 @@
+general:
+  seed: 1
+  wandb_disabled: "false"
+  # wandb_run_id: zfj1aw9x
+  freeze_encoder: False
+  resume_training: False
+  load_encoder: True
+  ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_wat/model-epoch=244-val_PSNR=31.69.ckpt"
+
+data:
+  replace_processed: False
+  image_size: [220, 160, 360]
+  train_num_per_epoch: 4 #1932
+  num_train: 1932 #1932
+  num_val: 484 #484
+  num_test: 605 #605
+  num_workers: 0
+  batch_size: 4
+  dataset_cls: WB3DWatFat
+  target_value_name: "survival" # "Age", "LVM (g)", "RAEF (%)", "RVEF (%)", "RVEDV (mL)", "LASV (mL)"
+  both_contrast: False
+
+
+module:
+  task_idx: 3 # reconstrucion: 0, regression: 1, segmentation: 2, survival: 3
+  module_idx: 1 # NFGMAE: 0, DeepHitMAE:1
+  
+  surv_hparams:
+    enc_embed_dim: 1024
+    enc_depth: 6
+    enc_num_heads: 4
+    dec_embed_dim: 1024
+    dec_depth: 2
+    representation_type: "cls_token" # "linear", "cls_token"
+    risks: 4
+
+  training_params:
+    lr: 0.00001
+    patch_size: [15, 10, 10]
+    mask_type: "random_roi"
+    mask_ratio: 0.0
+    loss_types: ["total_nfg"] # [mse]
+    loss_weights: [1.0]
+    train_log_rate: 1
+    val_log_rate: 1
+    labtrans_n: 15
+    dh_alpha: 1.0
+    dh_sigma: 0.1
+
+
+trainer:
+  max_epochs: 30
+  check_val_every_n_epoch: 3

@@ -1,0 +1,71 @@
+general:
+  seed: 1 # 1 for 0.7 mask ratio, 32 for 0.9
+  wandb_disabled: "false"
+  # wandb_run_id: 
+  freeze_encoder: False
+  resume_training: True
+  load_encoder: False
+  ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/mae_multi_recon_0.7_wat/30-01-2025_11-03-12/last.ckpt"
+  #ckpt_path: "/vol/aimspace/users/sdm/Projects/WholeBodyRL/logs/checkpoints/mae_multi_recon_0.7_blockwise/10-01-2025_18-05-39/last.ckpt"
+  #ckpt_path: "/vol/miltank/users/sdm/Projects/WholeBodyRL/logs/checkpoints/recon_0.7_small/07-12-2024_10-05-34/last.ckpt"
+  #ckpt_path: "/vol/miltank/users/sdm/Projects/WholeBodyRL/logs/checkpoints/mae_multi_recon_0.7/21-12-2024_00-19-47/last.ckpt"
+  #ckpt_path: "/vol/miltank/users/sdm/Projects/WholeBodyRL/logs/checkpoints/mae_multi_recon_0.7/21-12-2024_00-19-47/model-epoch=299-val_PSNR=32.18.ckpt"
+data:
+  replace_processed: False
+  #sax_slice_num: 6 # 6 for 3D, 1 for 2D
+  contrast_slice_num: 2
+  #image_size: [128, 128]
+  #image_size: [224, 168, 360] #[224, 168, 363]
+  #image_size: [220, 160, 364] # note that the dimension is permuted then to [360, 168, 224] (D, H, W) in axial view
+  image_size: [220, 160, 360]
+  train_num_per_epoch: 5000
+  #num_train: 31799 67993
+  num_train: 73345
+  num_val: 100
+  num_test: 100
+  num_workers: 4
+  batch_size: 4
+  dataset_cls: WB3DWatFat
+  augmentations: ["random_flip"]
+  both_contrast: False
+
+
+module:
+  task_idx: 0 # reconstrucion: 0, regression: 1, segmentation: 2
+  module_idx: 0 # ReconMAE: 0, CLReconMAE: 1, DisentangleReconMAE: 2
+  
+  recon_hparams:
+    enc_embed_dim: 1024 #1025
+    enc_depth: 6 #6
+    enc_num_heads: 4 #5
+    dec_embed_dim: 1024 #1025
+    dec_depth: 2
+    dec_num_heads: 4 #5
+
+  training_params:
+    #patch_size: [25, 8, 8]
+    #patch_size: [16, 14, 22]
+    #patch_size: [8, 7, 11]
+    #patch_size: [16, 14, 24]
+    #patch_size: [24, 14, 16]  # for [360, 168, 224]
+    #patch_size: [12, 7, 8]
+    #patch_size: [18, 8, 10]
+    #patch_size: [14, 10, 10]
+    patch_size: [15, 10, 10]
+    mask_type: "random_roi"
+    #mask_type: "random_roi_blockwise"
+    mask_ratio: 0.7 #0.25
+    loss_types: ["mse"] # [mse]
+    loss_weights: [1.0]
+    train_log_rate: 2
+    val_log_rate: 2
+    patch_in_channels: 1
+    lr: 0.0001
+    max_lr: 0.001
+  
+  
+
+
+trainer:
+  max_epochs: 300
+  check_val_every_n_epoch: 5

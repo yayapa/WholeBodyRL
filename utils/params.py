@@ -4,6 +4,8 @@ from dataclasses import asdict, dataclass, fields, field
 import yaml
 from typing import Any, Dict, Optional, Tuple
 
+from models.regression_models import NFGMAE
+
 
 @dataclass
 class GeneralParams:
@@ -47,6 +49,7 @@ class DataParams:
     image_size: Tuple[int, ...] = (128, 128)
     # Use default_factory for mutable types
     augmentations: list = field(default_factory=lambda: ["random_flip"])
+    both_contrast: bool = True
     
 
 @dataclass
@@ -89,6 +92,16 @@ class RegrMAEParams:
     dec_embed_dim: int = 256
     dec_depth: int = 2
     regressor_type: str = "cls_token"
+
+@dataclass
+class NFGMAEParams:
+    enc_embed_dim: int = 1025
+    enc_depth: int = 6
+    enc_num_heads: int = 5
+    mlp_ratio: float = 4.
+    dec_embed_dim: int = 256
+    dec_depth: int = 2
+    survival_type: str = "cls_token"
     
 
 @dataclass
@@ -114,6 +127,7 @@ class TrainingParams:
     # Loss
     loss_types: Tuple[str, ...] = ("mse")
     loss_weights: Tuple[float, ...] = (1.0,)
+    labtrans_n: int = 10
     
     
 @dataclass
@@ -125,6 +139,7 @@ class ModuleParams:
     recon_hparams: ReconMAEParams = None
     seg_hparams: SegMAEParams = None
     regr_hparams: RegrMAEParams = None
+    surv_hparams: NFGMAEParams = None
     
     
 @dataclass
@@ -148,7 +163,8 @@ def load_config_from_yaml(file_path):
                     module=ModuleParams(recon_hparams=ReconMAEParams(),
                                         seg_hparams=SegMAEParams(),
                                         regr_hparams=RegrMAEParams(),
-                                        training_params=TrainingParams()))
+                                        training_params=TrainingParams(),
+                                        surv_hparams=NFGMAEParams()))
     update_params = update_dataclass_from_dict(params, config_data)
 
     return update_params
