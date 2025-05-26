@@ -37,8 +37,11 @@ def sincos_pos_embed(embed_dim, grid_size, cls_token=False, use_both_axes=True):
     Returns:
         pos_embed: [np.prod(grid_size), embed_dim] or [1+np.prod(grid_size), embed_dim] (with or without cls_token).
     """
+    print(f"Grid size: {grid_size}")
+    print(f"embed_dim: {embed_dim}")
     if use_both_axes:
         grid_dim = len(grid_size)
+
         assert grid_dim == 4, "Grid_size should be 4D for contrast and spatial positional embedding (C, D, H, W)"
         assert (embed_dim - 1) % (grid_dim * 2) == 0, "Each dimension must have 2 channels (sin, cos)"
 

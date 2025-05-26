@@ -195,7 +195,6 @@ class ReconMAE(BasicModule):
         x = self.encoder_norm(x)
         # return only cls_token
         return x[:, :1, :]
-        #return x[:, :1, :] #check it cls_token 
     
     def forward_encoder(self, x, roi_mask=None):
         """Forward pass of encoder
@@ -317,10 +316,18 @@ class ReconMAE(BasicModule):
         imgs, _, sub_idx, body_masks = batch
         if self.generate_embeddings is not None:
             embeddings = self.forward_encoder_eval(imgs)
-            self.all_embeddings.append(embeddings.cpu().numpy())
-            self.all_idx.append(sub_idx.cpu().numpy())
+            embeddings = embeddings.cpu().numpy()
+            sub_idx = sub_idx.cpu().numpy()
+            save_dir = os.path.dirname(self.generate_embeddings)
+            os.makedirs(save_dir, exist_ok=True)
+            for emb, idx in zip(embeddings, sub_idx):
+                file_path = os.path.join(save_dir, f"{idx}.npy")
+                np.save(file_path, emb)
+            #self.all_embeddings.append(embeddings)
+            #self.all_idx.append(sub_idx)
         else:
             _ = self.training_step(batch, batch_idx, mode="test")
+    """
     def on_test_end(self):
         if self.generate_embeddings is not None:
             save_dir = os.path.dirname(self.generate_embeddings)
@@ -330,7 +337,7 @@ class ReconMAE(BasicModule):
             all_idx = np.concatenate(self.all_idx, axis=0)
             np.savez_compressed(self.generate_embeddings, embeddings=all_embeddings, idx=all_idx)
             print(f"Embeddings saved to {self.generate_embeddings}")
-
+    """
     def log_recon_metrics(self, loss_dict, psnr_value, mode="train"):
         for loss_name, loss_value in loss_dict.items():
             self.module_logger.update_metric_item(f"{mode}/recon_{loss_name}", loss_value.detach().item(), mode=mode)
@@ -358,17 +365,22 @@ class ReconMAE(BasicModule):
         #self.save_nifti(mask_imgs[0][0], np.eye(4), os.path.join(mask_vis_path, "masked.nii.gz"))
 
         gt_wat_img_log = imgs_to_wandb_video(gt_imgs[0][0]).cpu().numpy()
-        gt_fat_img_log = imgs_to_wandb_video(gt_imgs[0][1]).cpu().numpy()
         pred_wat_img_log = imgs_to_wandb_video(pred_imgs[0][0]).cpu().numpy()
-        pred_fat_img_log = imgs_to_wandb_video(pred_imgs[0][1]).cpu().numpy()
         mask_img_wat_log = imgs_to_wandb_video(mask_imgs[0][0]).cpu().numpy()
-        mask_img_fat_log = imgs_to_wandb_video(mask_imgs[0][1]).cpu().numpy()
         self.module_logger.update_video_item(f"{mode}_video/gt_wat", sub_id, gt_wat_img_log, mode=mode)
-        self.module_logger.update_video_item(f"{mode}_video/gt_fat", sub_id, gt_fat_img_log, mode=mode)
         self.module_logger.update_video_item(f"{mode}_video/pred_wat", sub_id, pred_wat_img_log, mode=mode)
-        self.module_logger.update_video_item(f"{mode}_video/pred_fat", sub_id, pred_fat_img_log, mode=mode)
         self.module_logger.update_video_item(f"{mode}_video/mask_wat", sub_id, mask_img_wat_log, mode=mode)
-        self.module_logger.update_video_item(f"{mode}_video/mask_fat", sub_id, mask_img_fat_log, mode=mode)
+
+        
+        if self.use_both_axes:
+            gt_fat_img_log = imgs_to_wandb_video(gt_imgs[0][1]).cpu().numpy()
+            pred_fat_img_log = imgs_to_wandb_video(pred_imgs[0][1]).cpu().numpy()
+            mask_img_fat_log = imgs_to_wandb_video(mask_imgs[0][1]).cpu().numpy()
+            
+            
+            self.module_logger.update_video_item(f"{mode}_video/gt_fat", sub_id, gt_fat_img_log, mode=mode)
+            self.module_logger.update_video_item(f"{mode}_video/pred_fat", sub_id, pred_fat_img_log, mode=mode)
+            self.module_logger.update_video_item(f"{mode}_video/mask_fat", sub_id, mask_img_fat_log, mode=mode)
 
 
 

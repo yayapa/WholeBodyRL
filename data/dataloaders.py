@@ -10,13 +10,12 @@ from torch.utils.data import Dataset, DataLoader, RandomSampler, random_split
 
 from data.datasets import *
 from data.datasets import AbstractDataset, AbstractDataset_Test
+import test
 from utils.data_related import find_healthy_subjects, find_indices_of_images, process_cmr_images
 
-import torch
-from torch.utils.data import Sampler
-import torch.distributed as dist
-import math
 from pytorch_lightning.callbacks import Callback
+
+from data.samplers import EventsBalancedBatchSampler, RandomDistributedSampler, EventsBalancedSampler, AnchorBalancedBatchSampler, AnchorBalancedSampler
 
 class CMRDataModule(pl.LightningDataModule):
     def __init__(self, load_dir: str, processed_dir: str,  
@@ -209,44 +208,6 @@ class SetEpochCallback(Callback):
                 datamodule._train_dataloader.sampler.set_epoch(trainer.current_epoch)
 
 
-class RandomDistributedSampler(Sampler):
-    def __init__(self, dataset, num_samples=None, replacement=True):
-        super().__init__(dataset)
-        self.dataset = dataset
-        self.num_samples = num_samples or len(dataset)
-        self.replacement = replacement
-
-        # Check if distributed is available and initialized
-        if dist.is_available() and dist.is_initialized():
-            self.num_replicas = dist.get_world_size()
-            self.rank = dist.get_rank()
-        else:
-            print("distributed is not available and initialized")
-            self.num_replicas = 1
-            self.rank = 0
-
-        self.num_samples_per_rank = math.ceil(self.num_samples / self.num_replicas)
-        self.total_size = self.num_samples_per_rank * self.num_replicas
-        self.epoch = 0
-
-    def set_epoch(self, epoch):
-        self.epoch = epoch
-
-    def __iter__(self):
-        g = torch.Generator()
-        g.manual_seed(self.epoch)  # Ensuring reproducibility
-
-        # Randomly sample indices from the entire dataset
-        indices = torch.randperm(len(self.dataset), generator=g).tolist()
-
-        # Ensure each rank gets a non-overlapping subset of indices
-        indices = indices[self.rank:self.total_size:self.num_replicas]
-
-        # Truncate to desired number of samples per rank
-        return iter(indices[:self.num_samples_per_rank])
-
-    def __len__(self):
-        return self.num_samples_per_rank
 
 class WBDataModule(pl.LightningDataModule):
     def __init__(self,
@@ -267,6 +228,7 @@ class WBDataModule(pl.LightningDataModule):
                  multi_gpu: bool = False,
                  labels_file: str = "labels.csv",
                  augmentations: list = ["random_flip"],
+                 both_contrast: bool = True,
                  **kwargs):
         super().__init__()
 
@@ -297,6 +259,7 @@ class WBDataModule(pl.LightningDataModule):
         self.labels_file = labels_file
         self.augmentations = augmentations
         print("Using augmentations: ", self.augmentations)
+        self.both_contrast = both_contrast
 
     def setup(self, stage):
 
@@ -310,6 +273,16 @@ class WBDataModule(pl.LightningDataModule):
         labels_val = labels_val.reset_index(drop=True)
         labels_test = labels_test.reset_index(drop=True)
 
+        train_balanced = AnchorBalancedSampler(labels_train["event"].values, anchor_class=0, batch_size=self.batch_size)
+        #train_balanced = EventsBalancedBatchSampler(labels_train["event"].values)
+        val_balanced = AnchorBalancedSampler(labels_val["event"].values, anchor_class=0, batch_size=self.batch_size)
+        print("len val_balanced: ", len(val_balanced))
+        #val_balanced = EventsBalancedBatchSampler(labels_val["event"].values)
+        test_balanced = AnchorBalancedSampler(labels_test["event"].values, anchor_class=0, batch_size=self.batch_size)
+        #test_balanced = EventsBalancedBatchSampler(labels_test["event"].values)
+        
+
+
         self.train_dset = eval(f'{self.dataset_cls}')(
             labels=labels_train,
             target_value_name=self.target_value_name,
@@ -317,7 +290,8 @@ class WBDataModule(pl.LightningDataModule):
             augs=self.augment,
             img_size=self.image_size,
             body_mask_dir=self.body_mask_dir,
-            augmentations=self.augmentations
+            augmentations=self.augmentations,
+            both_contrast=self.both_contrast
         )
         self.val_dset = eval(f'{self.dataset_cls}_Test')(
             labels=labels_val,
@@ -326,7 +300,8 @@ class WBDataModule(pl.LightningDataModule):
             augs=self.augment,
             img_size=self.image_size,
             body_mask_dir=self.body_mask_dir,
-            augmentations=self.augmentations
+            augmentations=self.augmentations,
+            both_contrast=self.both_contrast
         )
         self.test_dset = eval(f'{self.dataset_cls}_Test')(
             labels=labels_test,
@@ -335,7 +310,8 @@ class WBDataModule(pl.LightningDataModule):
             augs=self.augment,
             img_size=self.image_size,
             body_mask_dir=self.body_mask_dir,
-            augmentations=self.augmentations
+            augmentations=self.augmentations,
+            both_contrast=self.both_contrast
         )
 
         #print("Train dataset size: ", len(self.train_dset))
@@ -355,15 +331,48 @@ class WBDataModule(pl.LightningDataModule):
                                                 persistent_workers=self.num_workers > 0)
 
         else:
-            self._train_dataloader = DataLoader(self.train_dset,
+            if self.target_value_name == "survival":
+                self._train_dataloader = DataLoader(self.train_dset,
+                                                    batch_size=self.batch_size,
+                                                    sampler=train_balanced,
+                                                    num_workers=self.num_workers,
+                                                    pin_memory=True,
+                                                    persistent_workers=self.num_workers > 0)
+            else:
+                self._train_dataloader = DataLoader(self.train_dset,
                                             batch_size=self.batch_size,
                                             sampler=RandomSampler(self.train_dset,
                                                                   num_samples=self.train_num_per_epoch),
                                             num_workers=self.num_workers,
                                             pin_memory=True,
                                             persistent_workers=self.num_workers > 0)
-        self._val_dataloader = DataLoader(self.val_dset, batch_size=self.batch_size, num_workers=0)
-        self._test_dataloader = DataLoader(self.test_dset, batch_size=self.batch_size, num_workers=0)
+        if self.target_value_name == "survival":
+            self._val_dataloader = DataLoader(self.val_dset,
+                                            batch_size=self.batch_size,
+                                            sampler=val_balanced,
+                                            num_workers=self.num_workers,
+                                            pin_memory=True,
+                                            persistent_workers=self.num_workers > 0,
+                                            drop_last=False
+                                            )
+            print("len val_dataloader: ", len(self._val_dataloader))
+        else:    
+            self._val_dataloader = DataLoader(self.val_dset, batch_size=self.batch_size, num_workers=0)
+        self._test_dataloader = DataLoader(self.test_dset, batch_size=self.batch_size, num_workers=0, drop_last=False)
+
+        if "time_to_event" in labels.columns:
+            self.durations = np.array(labels[labels["split"] == "train"]["time_to_event"].values.tolist())
+        else:
+            self.durations = None
+
+        if "event" in labels.columns:
+            #unique event labels 
+            self.num_events = labels["event"].unique()
+            self.num_events = len(self.num_events)
+            print("num events: ", self.num_events)
+            self.events = np.array(labels[labels["split"] == "train"]["event"].values.tolist())
+        else:   
+            self.num_events = None
 
     def train_dataloader(self):
         return self._train_dataloader

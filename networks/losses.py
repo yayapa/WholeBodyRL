@@ -1,7 +1,15 @@
+from __future__ import print_function
+from matplotlib.pyplot import xcorr
 import torch
 from typing import Optional
 from medutils.measures import psnr
 from monai.losses import DiceLoss
+import pandas as pd
+from networks.metrics import truncated_concordance_td, auc_td, brier_score as bs
+from pycox.evaluation import EvalSurv
+import numpy as np
+
+
 
 
 class PSNR(torch.nn.Module):
@@ -146,3 +154,149 @@ class SegmentationCriterion(torch.nn.Module):
         loss = loss.squeeze().mean(dim=0)
         dice = 1 - loss.detach()
         return loss.mean(), dice
+
+
+
+
+class FineGrayCriterion(torch.nn.Module):
+    """Wrapper to choose between total vs. cause‑specific loss."""
+
+    def __init__(self, loss_types, **kwargs):
+        super().__init__()
+        assert len(loss_types) == 1
+        if "total_nfg" in loss_types:
+            self.loss_fct = self._total_loss
+            self.needs_weight = True
+        elif "cause_specific" in loss_types:
+            self.loss_fct = self._total_loss_cs
+            self.needs_weight = False
+        else:
+            raise ValueError("loss_type must be 'total' or 'cause_specific'")
+        
+        self.risks = kwargs.get("risks", 1)
+
+    def forward(self, log_hr, log_balance_sr, e, rep, contrastive_weight):
+        if self.needs_weight:
+            return self.loss_fct(log_hr, log_balance_sr, e, rep, contrastive_weight)
+        
+
+
+        return self.loss_fct(log_hr, log_balance_sr, e, rep, contrastive_weight)
+    
+    def _calculate_c_indices(self, model, x, t, e):
+        predictions = [pd.concat([model._predict_(x, r) for r in self.risks], axis = 1)]
+        predictions = pd.concat(predictions, axis=0)
+        horizons = [0.25, 0.5, 0.75] # Horizons to evaluate the models
+        times_eval = np.quantile(t[e > 0], horizons)
+        self.evaluate(predictions, e, t, None, times_eval)
+    
+
+    # -----------------------------------------------------------------------------
+    # Fine‑Gray losses
+    # -----------------------------------------------------------------------------
+    def _total_loss(self, log_hr, log_balance_sr, e, rep, contrastive_weight):
+        """Full Fine‑Gray negative log‑likelihood with optional contrastive term."""
+        #if contrastive_weight > 0.0:
+        #    log_sr, log_b, tau, x_rep = model.forward(x, t, return_rep=True)
+        #else:
+        #    log_sr, log_b, tau = model.forward(x, t)
+        #    x_rep = None
+
+        #log_hr = model.gradient(log_sr, tau, e).log()
+        #log_balance_sr = log_b + log_sr
+
+        print("events in total loss", e)
+        print("log_balance_sr", log_balance_sr[e == 0])
+        err = -torch.logsumexp(log_balance_sr[e == 0], dim=1).sum()
+        available_risks = torch.unique(e[e > 0]).tolist()
+        available_risks = [int(k) for k in available_risks]
+
+        for k in available_risks:
+            err -= (log_balance_sr[e == k][:, k-1] + log_hr[e == k]).sum()
+        print("err", err)
+        survival_loss = err / len(e)  # it was len(t) before
+
+        print("rep", rep)
+
+        if rep is not None:
+            print("contrastive loss!")
+            labels = (e > 0).long()
+            features = rep.unsqueeze(1)
+            contrastive_loss = supcon_criterion(features, labels)
+            return survival_loss + contrastive_weight * contrastive_loss
+        return survival_loss
+
+    @staticmethod
+    def _total_loss_cs(self, model, x: torch.Tensor, t: torch.Tensor, e: torch.Tensor):
+        log_sr, _, tau = model.forward(x, t)
+        log_hr = model.gradient(log_sr, tau, e).log()
+
+        err = torch.tensor(0.0, device=x.device, dtype=x.dtype)
+        for k in range(model.risks):
+            err -= log_sr[e != (k + 1)][:, k].sum()
+            err -= log_hr[e == (k + 1)].sum()
+        return err / len(t)
+    
+        
+
+# -----------------------------------------------------------------------------
+# Contrastive loss (SupCon)
+# -----------------------------------------------------------------------------
+class SupConLoss(torch.nn.Module):
+    """Supervised Contrastive Loss (from https://arxiv.org/abs/2004.11362)."""
+
+    def __init__(self, temperature: float = 0.07, contrast_mode: str = "all", base_temperature: float = 0.07):
+        super().__init__()
+        self.temperature = temperature
+        self.contrast_mode = contrast_mode
+        self.base_temperature = base_temperature
+
+    def forward(self, features: torch.Tensor, labels: Optional[torch.Tensor] = None, mask: Optional[torch.Tensor] = None):
+        if features.ndim < 3:
+            raise ValueError("`features` needs to be [bsz, n_views, ...]")
+        if features.ndim > 3:
+            features = features.view(features.shape[0], features.shape[1], -1)
+
+        device = features.device
+        batch_size = features.shape[0]
+
+        if labels is None and mask is None:
+            mask = torch.eye(batch_size, dtype=torch.float32, device=device)
+        elif labels is not None:
+            labels = labels.view(-1, 1)
+            mask = torch.eq(labels, labels.T).float().to(device)
+        else:
+            mask = mask.float().to(device)
+
+        contrast_count = features.shape[1]
+        contrast_feature = torch.cat(torch.unbind(features, dim=1), dim=0)
+
+        if self.contrast_mode == "one":
+            anchor_feature = features[:, 0]
+            anchor_count = 1
+        else:
+            anchor_feature = contrast_feature
+            anchor_count = contrast_count
+
+        logits = torch.div(anchor_feature @ contrast_feature.T, self.temperature)
+        logits_max, _ = logits.max(dim=1, keepdim=True)
+        logits = logits - logits_max.detach()
+
+        mask = mask.repeat(anchor_count, contrast_count)
+        logits_mask = torch.ones_like(mask)
+        diag = torch.arange(batch_size * anchor_count, device=device)
+        logits_mask.scatter_(1, diag.view(-1, 1), 0)
+        mask = mask * logits_mask
+
+        exp_logits = torch.exp(logits) * logits_mask
+        log_prob = logits - torch.log(exp_logits.sum(1, keepdim=True))
+
+        pos_pairs = mask.sum(1)
+        pos_pairs = torch.where(pos_pairs < 1e-6, torch.ones_like(pos_pairs), pos_pairs)
+        mean_log_prob_pos = (mask * log_prob).sum(1) / pos_pairs
+
+        loss = -(self.temperature / self.base_temperature) * mean_log_prob_pos
+        return loss.view(anchor_count, batch_size).mean()
+
+
+supcon_criterion = SupConLoss()

@@ -36,7 +36,8 @@ class AbstractDataset(Dataset):
         self.num_classes = num_classes
         self.z_seg_relative = kwargs.get("z_seg_relative", 4)
         self.augmentation = self._augment
-        self.view = self.get_view()
+        #self.view = self.get_view()
+        #self.view = self.get_view()
         
     @property
     def _augment(self) -> bool:
@@ -65,6 +66,7 @@ class WB3DWatFat(AbstractDataset):
         self.img_size = kwargs.get("img_size", (224, 168, 363))
         self.body_mask_dir = kwargs.get("body_mask_dir", None)
         self.augmentations = kwargs.get("augmentations", None)
+        self.both_contrast = kwargs.get("both_contrast", True)
         self.slice_num = 2
 
 
@@ -77,15 +79,16 @@ class WB3DWatFat(AbstractDataset):
         img_path_wat = os.path.join(self.load_dir, img_name_wat)
         image_nifti_wat = self._load_nifti_image(img_path_wat)
         image_nifti_wat = np.expand_dims(image_nifti_wat, axis=0)  # add channel dimension
-
-        img_name_fat = os.path.join(str(self.labels.loc[idx, EID_COL]), "fat.nii.gz")
-        img_path_fat = os.path.join(self.load_dir, img_name_fat)
-        image_nifti_fat = self._load_nifti_image(img_path_fat)
-        image_nifti_fat = np.expand_dims(image_nifti_fat, axis=0)  # add channel dimension
+        if self.both_contrast:
+            img_name_fat = os.path.join(str(self.labels.loc[idx, EID_COL]), "fat.nii.gz")
+            img_path_fat = os.path.join(self.load_dir, img_name_fat)
+            image_nifti_fat = self._load_nifti_image(img_path_fat)
+            image_nifti_fat = np.expand_dims(image_nifti_fat, axis=0)  # add channel dimension
+            image_nifti_fat = self._min_max_normalize(image_nifti_fat)
 
         # Min-Max Normalization
         image_nifti_wat = self._min_max_normalize(image_nifti_wat)
-        image_nifti_fat = self._min_max_normalize(image_nifti_fat)
+        
 
 
         transforms = tio.transforms.Compose(
@@ -94,8 +97,11 @@ class WB3DWatFat(AbstractDataset):
             ]
         )
         image_nifti_wat = transforms(image_nifti_wat)
-        image_nifti_fat = transforms(image_nifti_fat)
-        image = np.concatenate((image_nifti_wat, image_nifti_fat), axis=0)
+        if self.both_contrast:
+            image_nifti_fat = transforms(image_nifti_fat)
+            image = np.concatenate((image_nifti_wat, image_nifti_fat), axis=0)
+        else:
+            image = image_nifti_wat
 
 
         body_mask_path = os.path.join(self.body_mask_dir, str(self.labels.loc[idx, EID_COL]), "body_mask.nii.gz")
@@ -106,12 +112,12 @@ class WB3DWatFat(AbstractDataset):
         body_mask = tio.CropOrPad(self.img_size)(body_mask)
 
         # print the number of 1 in the body mask:
-        #print("eid:", self.labels.loc[idx, EID_COL])
+        print("eid:", self.labels.loc[idx, EID_COL])
         #print("mask ratio", np.sum(body_mask) / body_mask.size)
 
         # duplicate body mask for 2 channels
-        
-        body_mask = body_mask.repeat(2, axis=0)
+        if self.both_contrast:
+            body_mask = body_mask.repeat(2, axis=0)
         body_mask = torch.from_numpy(body_mask).float()
         body_mask = body_mask.permute(0, 3, 2, 1)   # [2, 360, 168, 224]
         
@@ -120,7 +126,12 @@ class WB3DWatFat(AbstractDataset):
             image = self._apply_augmentation(image)
 
         if self.target_value_name:
-            target_value = self.labels.loc[idx, self.target_value_name]
+            if self.target_value_name == "survival":
+                t = self.labels.loc[idx, "time_to_event"]
+                e = self.labels.loc[idx, "event"]
+                target_value = (t, e)  
+            else: 
+                target_value = self.labels.loc[idx, self.target_value_name]
             #target_value = self._load_values(self._get_subject_id(idx))
         else:
             target_value = None
@@ -132,6 +143,10 @@ class WB3DWatFat(AbstractDataset):
         #assert image.shape == (2, 360, 168, 224)
         #print("eid and idx", self.labels.loc[idx, EID_COL], idx)
 
+        #print("image shape", image.shape)
+        #print("target value", target_value)
+        #print("body mask shape", body_mask.shape)
+        #print("idx", idx)
         return image, target_value, idx, body_mask
 
     def _load_values(self, subject_idx: int):
@@ -172,10 +187,14 @@ class WB3DWatFat(AbstractDataset):
             nr_boxes = np.random.randint(0, 10)
             # apply _mask_boxes to the water and fat images
             image_nifti_wat = im[0, :, :, :]
-            image_nifti_fat = im[1, :, :, :]
             image_nifti_wat = self._mask_boxes(image_nifti_wat, range_box_size=(20, 60), nr_boxes=nr_boxes)
-            image_nifti_fat = self._mask_boxes(image_nifti_fat, range_box_size=(20, 60), nr_boxes=nr_boxes)
-            im = np.stack((image_nifti_wat, image_nifti_fat), axis=0)
+            if self.both_contrast:
+                image_nifti_fat = im[1, :, :, :]
+                image_nifti_fat = self._mask_boxes(image_nifti_fat, range_box_size=(20, 60), nr_boxes=nr_boxes)
+            if self.both_contrast:
+                im = np.stack((image_nifti_wat, image_nifti_fat), axis=0)
+            else:
+                im = image_nifti_wat
         return im
 
     
@@ -194,7 +213,11 @@ class WB3DWatFat(AbstractDataset):
         return normalized_image
 
     def get_view(self) -> int:
-        return 2
+        if self.both_contrast:
+            return 2
+        else:
+            return 1
+        
     
     def _mask_boxes(self, image, range_box_size:Tuple, nr_boxes:int):
         for _ in range(nr_boxes):
