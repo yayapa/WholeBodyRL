@@ -1,38 +1,43 @@
 general:
   seed: 1
-  wandb_disabled: "false"
+  wandb_disabled: "true"
   # wandb_run_id: zfj1aw9x
   freeze_encoder: False
   resume_training: False
   load_encoder: True
-  ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_wat/model-epoch=244-val_PSNR=31.69.ckpt"
+  #ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_wat/model-epoch=244-val_PSNR=31.69.ckpt"
+  ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_fat_wat/model-epoch=299-val_PSNR=32.18.ckpt"
 
 data:
   replace_processed: False
   image_size: [220, 160, 360]
-  train_num_per_epoch: 4 #1932
+  train_num_per_epoch: 1932 #1932
   num_train: 1932 #1932
   num_val: 484 #484
   num_test: 605 #605
-  num_workers: 0
-  batch_size: 4
+  num_workers: 2
+  batch_size: 2
   dataset_cls: WB3DWatFat
   target_value_name: "survival" # "Age", "LVM (g)", "RAEF (%)", "RVEF (%)", "RVEDV (mL)", "LASV (mL)"
-  both_contrast: False
+  both_contrast: True
+  return_body_mask: False
 
 
 module:
   task_idx: 3 # reconstrucion: 0, regression: 1, segmentation: 2, survival: 3
-  module_idx: 1 # NFGMAE: 0, DeepHitMAE:1
+  module_idx: 0 # NFGMAE: 0, DeepHitMAE:1
   
   surv_hparams:
-    enc_embed_dim: 1024
+    enc_embed_dim: 1025 # 1024 1025
     enc_depth: 6
-    enc_num_heads: 4
-    dec_embed_dim: 1024
+    enc_num_heads: 5 # 4 5
+    dec_embed_dim: 1025 # 1024
     dec_depth: 2
     representation_type: "cls_token" # "linear", "cls_token"
     risks: 4
+    labtrans_n: 15
+    dh_alpha: 1.0
+    dh_sigma: 0.1
 
   training_params:
     lr: 0.00001
@@ -42,12 +47,10 @@ module:
     loss_types: ["total_nfg"] # [mse]
     loss_weights: [1.0]
     train_log_rate: 1
-    val_log_rate: 1
-    labtrans_n: 15
-    dh_alpha: 1.0
-    dh_sigma: 0.1
+    val_log_rate: 5
+    patience: 3  # validation checks
 
 
 trainer:
-  max_epochs: 30
-  check_val_every_n_epoch: 3
+  max_epochs: 100
+  check_val_every_n_epoch: 5

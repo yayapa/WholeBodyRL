@@ -171,52 +171,23 @@ class FineGrayCriterion(torch.nn.Module):
             self.loss_fct = self._total_loss_cs
             self.needs_weight = False
         else:
-            raise ValueError("loss_type must be 'total' or 'cause_specific'")
-        
-        self.risks = kwargs.get("risks", 1)
-
+            raise ValueError("loss_type must be 'total' or 'cause_specific'") 
+ 
     def forward(self, log_hr, log_balance_sr, e, rep, contrastive_weight):
         if self.needs_weight:
             return self.loss_fct(log_hr, log_balance_sr, e, rep, contrastive_weight)
-        
-
-
         return self.loss_fct(log_hr, log_balance_sr, e, rep, contrastive_weight)
     
-    def _calculate_c_indices(self, model, x, t, e):
-        predictions = [pd.concat([model._predict_(x, r) for r in self.risks], axis = 1)]
-        predictions = pd.concat(predictions, axis=0)
-        horizons = [0.25, 0.5, 0.75] # Horizons to evaluate the models
-        times_eval = np.quantile(t[e > 0], horizons)
-        self.evaluate(predictions, e, t, None, times_eval)
-    
-
-    # -----------------------------------------------------------------------------
-    # Fine‑Gray losses
-    # -----------------------------------------------------------------------------
     def _total_loss(self, log_hr, log_balance_sr, e, rep, contrastive_weight):
         """Full Fine‑Gray negative log‑likelihood with optional contrastive term."""
-        #if contrastive_weight > 0.0:
-        #    log_sr, log_b, tau, x_rep = model.forward(x, t, return_rep=True)
-        #else:
-        #    log_sr, log_b, tau = model.forward(x, t)
-        #    x_rep = None
-
-        #log_hr = model.gradient(log_sr, tau, e).log()
-        #log_balance_sr = log_b + log_sr
-
-        print("events in total loss", e)
-        print("log_balance_sr", log_balance_sr[e == 0])
         err = -torch.logsumexp(log_balance_sr[e == 0], dim=1).sum()
         available_risks = torch.unique(e[e > 0]).tolist()
         available_risks = [int(k) for k in available_risks]
 
         for k in available_risks:
             err -= (log_balance_sr[e == k][:, k-1] + log_hr[e == k]).sum()
-        print("err", err)
+        
         survival_loss = err / len(e)  # it was len(t) before
-
-        print("rep", rep)
 
         if rep is not None:
             print("contrastive loss!")

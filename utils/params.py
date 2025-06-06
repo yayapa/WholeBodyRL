@@ -4,8 +4,6 @@ from dataclasses import asdict, dataclass, fields, field
 import yaml
 from typing import Any, Dict, Optional, Tuple
 
-from models.regression_models import NFGMAE
-
 
 @dataclass
 class GeneralParams:
@@ -50,6 +48,7 @@ class DataParams:
     # Use default_factory for mutable types
     augmentations: list = field(default_factory=lambda: ["random_flip"])
     both_contrast: bool = True
+    return_body_mask: bool = True
     
 
 @dataclass
@@ -102,6 +101,10 @@ class NFGMAEParams:
     dec_embed_dim: int = 256
     dec_depth: int = 2
     survival_type: str = "cls_token"
+    labtrans_n: int = 15
+    dh_alpha: float = 0.2
+    dh_sigma: float = 0.1
+    risk: int = 4
     
 
 @dataclass
@@ -127,7 +130,7 @@ class TrainingParams:
     # Loss
     loss_types: Tuple[str, ...] = ("mse")
     loss_weights: Tuple[float, ...] = (1.0,)
-    labtrans_n: int = 10
+    patience: int = 3
     
     
 @dataclass

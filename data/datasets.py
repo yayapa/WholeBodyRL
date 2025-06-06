@@ -1,3 +1,4 @@
+from email.mime import image
 from math import e
 from pathlib import Path
 import torch
@@ -12,6 +13,7 @@ from utils import image_normalization
 from data.transforms import *
 import nibabel as nib
 import torchio as tio
+import gc
 
 
 __all__ = ["Cardiac2DplusT", "Cardiac2DplusT_Test", "Cardiac3DSAX", "Cardiac3DSAX_Test", 
@@ -67,14 +69,15 @@ class WB3DWatFat(AbstractDataset):
         self.body_mask_dir = kwargs.get("body_mask_dir", None)
         self.augmentations = kwargs.get("augmentations", None)
         self.both_contrast = kwargs.get("both_contrast", True)
+        self.return_body_mask = kwargs.get("return_body_mask", True)
         self.slice_num = 2
 
 
     def _load_nifti_image(self, img_path):
-        image_nifti = nib.load(img_path)
-        return image_nifti.get_fdata()
+        return nib.load(img_path).get_fdata(dtype=np.float32)  #added dtype
 
     def __getitem__(self, idx):
+        batch_dict = {}
         img_name_wat = os.path.join(str(self.labels.loc[idx, EID_COL]), "wat.nii.gz")
         img_path_wat = os.path.join(self.load_dir, img_name_wat)
         image_nifti_wat = self._load_nifti_image(img_path_wat)
@@ -100,30 +103,40 @@ class WB3DWatFat(AbstractDataset):
         if self.both_contrast:
             image_nifti_fat = transforms(image_nifti_fat)
             image = np.concatenate((image_nifti_wat, image_nifti_fat), axis=0)
+            del image_nifti_wat, image_nifti_fat
         else:
             image = image_nifti_wat
+            del image_nifti_wat
+        
+        gc.collect()
 
+        if self.return_body_mask:
 
-        body_mask_path = os.path.join(self.body_mask_dir, str(self.labels.loc[idx, EID_COL]), "body_mask.nii.gz")
-        body_mask = self._load_nifti_image(body_mask_path)
-        # add 1 channel dimension
-        body_mask = np.expand_dims(body_mask, axis=0)
-        # crop or pad body mask
-        body_mask = tio.CropOrPad(self.img_size)(body_mask)
+            body_mask_path = os.path.join(self.body_mask_dir, str(self.labels.loc[idx, EID_COL]), "body_mask.nii.gz")
+            body_mask = self._load_nifti_image(body_mask_path)
+            # add 1 channel dimension
+            body_mask = np.expand_dims(body_mask, axis=0)
+            # crop or pad body mask
+            body_mask = tio.CropOrPad(self.img_size)(body_mask)
 
-        # print the number of 1 in the body mask:
-        print("eid:", self.labels.loc[idx, EID_COL])
-        #print("mask ratio", np.sum(body_mask) / body_mask.size)
+            # print the number of 1 in the body mask:
 
-        # duplicate body mask for 2 channels
-        if self.both_contrast:
-            body_mask = body_mask.repeat(2, axis=0)
-        body_mask = torch.from_numpy(body_mask).float()
-        body_mask = body_mask.permute(0, 3, 2, 1)   # [2, 360, 168, 224]
+            # duplicate body mask for 2 channels
+            if self.both_contrast:
+                body_mask = body_mask.repeat(2, axis=0)
+            body_mask = torch.from_numpy(body_mask).float()
+            body_mask = body_mask.permute(0, 3, 2, 1)   # [2, 360, 168, 224]
+            batch_dict["body_mask"] = body_mask
         
 
         if self.augmentation:
             image = self._apply_augmentation(image)
+        
+        image = torch.from_numpy(image).float()  # [2, 224, 168, 363] torchio expects (C, W, H, D)
+        # permute to [C, D, H, W]
+        image = image.permute(0, 3, 2, 1) # [2, 363, 224, 168]
+
+        batch_dict["image"] = image
 
         if self.target_value_name:
             if self.target_value_name == "survival":
@@ -133,21 +146,11 @@ class WB3DWatFat(AbstractDataset):
             else: 
                 target_value = self.labels.loc[idx, self.target_value_name]
             #target_value = self._load_values(self._get_subject_id(idx))
-        else:
-            target_value = None
+        batch_dict["target_value"] = target_value
 
-        image = torch.from_numpy(image).float()  # [2, 224, 168, 363] torchio expects (C, W, H, D)
-        # permute to [C, D, H, W]
-        image = image.permute(0, 3, 2, 1) # [2, 363, 224, 168]
+        batch_dict["sub_idx"] = idx
 
-        #assert image.shape == (2, 360, 168, 224)
-        #print("eid and idx", self.labels.loc[idx, EID_COL], idx)
-
-        #print("image shape", image.shape)
-        #print("target value", target_value)
-        #print("body mask shape", body_mask.shape)
-        #print("idx", idx)
-        return image, target_value, idx, body_mask
+        return batch_dict
 
     def _load_values(self, subject_idx: int):
         """
@@ -209,8 +212,7 @@ class WB3DWatFat(AbstractDataset):
             return np.zeros_like(image)  # If all values are the same, return an array of zeros
 
         # Apply min-max normalization to scale to [0, 1]
-        normalized_image = (image - min_val) / (max_val - min_val)
-        return normalized_image
+        return (image - min_val) / (max_val - min_val)
 
     def get_view(self) -> int:
         if self.both_contrast:

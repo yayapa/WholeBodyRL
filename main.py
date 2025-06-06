@@ -1,28 +1,32 @@
 import argparse
+from cProfile import label
 from dataclasses import asdict
 from datetime import datetime
 import os
 from pathlib import Path
 
 from matplotlib.dates import set_epoch
+from sympy import N
 import torch
 import wandb
 
 from data.dataloaders import WBDataModule
 from models.reconstruction_models import ReconMAE
 from models.regression_models import RegrMAE, ResNet18Module, ResNet18Module3D, ResNet50Module
+from models.survival_models import NFGMAE, DeepHitMAE
 from models.segmentation_models import SegMAE
 from utils.data_related import get_data_paths
 from utils.params import load_config_from_yaml
 
 from lightning import Trainer, seed_everything
 from lightning.pytorch.loggers import CSVLogger
-from lightning.pytorch.callbacks import ModelCheckpoint, BaseFinetuning
+from lightning.pytorch.callbacks import ModelCheckpoint, BaseFinetuning, EarlyStopping
 from dotenv import load_dotenv
 
 from pytorch_lightning.callbacks import Callback
 from data.dataloaders import SetEpochCallback
 import torch.distributed as dist
+import pandas as pd
 
 
 
@@ -119,7 +123,8 @@ def main():
     # Initialze lighting module
     module_LUT = {"reconstruction": [ReconMAE],
                   "regression": [RegrMAE, ResNet18Module, ResNet50Module, ResNet18Module3D],
-                  "segmentation": [SegMAE]}
+                  "segmentation": [SegMAE],
+                  "survival": [NFGMAE, DeepHitMAE]}
     if params.module.task_idx == 0:
         module_cls = module_LUT["reconstruction"][params.module.module_idx]
         module_params = {**params.module.training_params.__dict__, **params.module.recon_hparams.__dict__}
@@ -129,11 +134,31 @@ def main():
     elif params.module.task_idx == 2:
         module_cls = module_LUT["segmentation"][params.module.module_idx]
         module_params = {**params.module.training_params.__dict__, **params.module.seg_hparams.__dict__}
+    elif params.module.task_idx == 3:
+        module_cls = module_LUT["survival"][params.module.module_idx]
+        module_params = {**params.module.training_params.__dict__, **params.module.surv_hparams.__dict__}
     else:
         raise NotImplementedError
 
     print("Before model load")
-    model = module_cls(val_dset=data_module.val_dset, **module_params)
+    # if there is a key durations in data_module
+    if hasattr(data_module, "durations"):
+        durations = data_module.durations
+    else:
+        durations = None
+    if hasattr(data_module, "events"):
+        events = data_module.events
+    if hasattr(data_module, "num_events"):
+        risks = data_module.num_events - 1
+    else:
+        risks = None
+    if hasattr(data_module, "labtrans_n"):
+        labtrans_n = data_module.labtrans_n
+    else:
+        labtrans_n = None
+    
+    print("module_params:", module_params)
+    model = module_cls(val_dset=data_module.val_dset, durations=durations, events=events, risks=risks, **module_params)
     print("After model load")
     print("ckpt path:", params.general.ckpt_path)
     
@@ -153,6 +178,7 @@ def main():
             decomposed_k = k.split(".")
             if decomposed_k[0] in pretrained_params:
                 processed_dict[k] = pretrained_dict[k]
+        print("Pretrained encoder keys:", processed_dict.keys())
         model.load_state_dict(processed_dict, strict=False)
     
     if params.general.freeze_encoder: # Freeze encoder
@@ -167,11 +193,18 @@ def main():
         ("val_PSNR", "model-{epoch:03d}-{val_PSNR:.2f}", "max"), # Reconstruction
         ("val_MAE", "model-{epoch:03d}-{val_MAE:.2f}", "min"), # Regression
         ("val_Dice_FG", "model-{epoch:03d}-{val_Dice_FG:.2f}", "max"), # Segmentation
+        ("val_surv_loss", "model-{epoch:03d}-{val_surv_loss:.2f}", "min"), # Survival
     ]
     monitor_metric, ckpt_filename, monitor_mode = monitor_LUT[params.module.task_idx]
     os.makedirs(ckpt_dir, exist_ok=True)
     checkpoint_callback = ModelCheckpoint(dirpath=ckpt_dir, filename=ckpt_filename, monitor=monitor_metric, 
-                                          mode=monitor_mode, save_top_k=5, save_last=True, verbose=True,)
+                                          mode=monitor_mode, save_top_k=3, save_last=True, verbose=True,)
+    early_stopping_callback = EarlyStopping(
+        monitor=monitor_metric,
+        patience=params.module.training_params.patience,
+        mode=monitor_mode,
+        verbose=True,
+    )
     set_epoch_callback = SetEpochCallback()
 
     print("Before trainer")
@@ -180,11 +213,11 @@ def main():
         trainer = Trainer(
             default_root_dir=paths.log_folder,
             logger=logger,
-            callbacks=[checkpoint_callback],
+            callbacks=[checkpoint_callback, early_stopping_callback],
             fast_dev_run=False,
             limit_train_batches=1.0,
-            limit_val_batches=1.0,
-            num_sanity_val_steps=1,
+            #limit_val_batches=1.0,
+            #num_sanity_val_steps=1,
             benchmark=True,
             devices='auto',  # Automatically select all available GPUs or specify a number like `devices=2`
             strategy="ddp",  # Distributed Data Parallel (DDP) strategy for multi-GPU training
@@ -201,12 +234,13 @@ def main():
         trainer = Trainer(
             default_root_dir=paths.log_folder,
             logger=logger,
-            callbacks=[checkpoint_callback],
+            callbacks=[checkpoint_callback, early_stopping_callback] ,
             fast_dev_run=False,
             limit_train_batches=1.0,
             limit_val_batches=1.0,
-            num_sanity_val_steps=2,
+            num_sanity_val_steps=0,
             benchmark=True,
+            precision="16",
             **params.trainer.__dict__,
         )
         #if args.pipeline == "eval":
