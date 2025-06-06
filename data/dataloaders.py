@@ -229,6 +229,7 @@ class WBDataModule(pl.LightningDataModule):
                  labels_file: str = "labels.csv",
                  augmentations: list = ["random_flip"],
                  both_contrast: bool = True,
+                 return_body_mask: bool = True,
                  **kwargs):
         super().__init__()
 
@@ -260,6 +261,7 @@ class WBDataModule(pl.LightningDataModule):
         self.augmentations = augmentations
         print("Using augmentations: ", self.augmentations)
         self.both_contrast = both_contrast
+        self.return_body_mask = return_body_mask
 
     def setup(self, stage):
 
@@ -275,8 +277,10 @@ class WBDataModule(pl.LightningDataModule):
 
         train_balanced = AnchorBalancedSampler(labels_train["event"].values, anchor_class=0, batch_size=self.batch_size)
         #train_balanced = EventsBalancedBatchSampler(labels_train["event"].values)
+        #train_balanced = RandomSampler(self.train_dset, num_samples=self.train_num_per_epoch)
         val_balanced = AnchorBalancedSampler(labels_val["event"].values, anchor_class=0, batch_size=self.batch_size)
-        print("len val_balanced: ", len(val_balanced))
+        #val_balanced = RandomSampler(self.val_dset, num_samples=self.train_num_per_epoch)
+        #print("len val_balanced: ", len(val_balanced))
         #val_balanced = EventsBalancedBatchSampler(labels_val["event"].values)
         test_balanced = AnchorBalancedSampler(labels_test["event"].values, anchor_class=0, batch_size=self.batch_size)
         #test_balanced = EventsBalancedBatchSampler(labels_test["event"].values)
@@ -291,7 +295,8 @@ class WBDataModule(pl.LightningDataModule):
             img_size=self.image_size,
             body_mask_dir=self.body_mask_dir,
             augmentations=self.augmentations,
-            both_contrast=self.both_contrast
+            both_contrast=self.both_contrast,
+            return_body_mask=self.return_body_mask
         )
         self.val_dset = eval(f'{self.dataset_cls}_Test')(
             labels=labels_val,
@@ -301,7 +306,8 @@ class WBDataModule(pl.LightningDataModule):
             img_size=self.image_size,
             body_mask_dir=self.body_mask_dir,
             augmentations=self.augmentations,
-            both_contrast=self.both_contrast
+            both_contrast=self.both_contrast,
+            return_body_mask=self.return_body_mask
         )
         self.test_dset = eval(f'{self.dataset_cls}_Test')(
             labels=labels_test,
@@ -311,7 +317,8 @@ class WBDataModule(pl.LightningDataModule):
             img_size=self.image_size,
             body_mask_dir=self.body_mask_dir,
             augmentations=self.augmentations,
-            both_contrast=self.both_contrast
+            both_contrast=self.both_contrast,
+            return_body_mask=self.return_body_mask
         )
 
         #print("Train dataset size: ", len(self.train_dset))
@@ -336,8 +343,12 @@ class WBDataModule(pl.LightningDataModule):
                                                     batch_size=self.batch_size,
                                                     sampler=train_balanced,
                                                     num_workers=self.num_workers,
+                                                    #pin_memory=False,
+                                                    #persistent_workers=False,
                                                     pin_memory=True,
-                                                    persistent_workers=self.num_workers > 0)
+                                                    persistent_workers=self.num_workers > 0
+                                                    #prefetch_factor=1,
+                                                    )
             else:
                 self._train_dataloader = DataLoader(self.train_dset,
                                             batch_size=self.batch_size,
@@ -351,11 +362,12 @@ class WBDataModule(pl.LightningDataModule):
                                             batch_size=self.batch_size,
                                             sampler=val_balanced,
                                             num_workers=self.num_workers,
+                                            #pin_memory=False,
+                                            #persistent_workers=False,
                                             pin_memory=True,
                                             persistent_workers=self.num_workers > 0,
                                             drop_last=False
                                             )
-            print("len val_dataloader: ", len(self._val_dataloader))
         else:    
             self._val_dataloader = DataLoader(self.val_dset, batch_size=self.batch_size, num_workers=0)
         self._test_dataloader = DataLoader(self.test_dset, batch_size=self.batch_size, num_workers=0, drop_last=False)
