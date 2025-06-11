@@ -275,14 +275,16 @@ class WBDataModule(pl.LightningDataModule):
         labels_val = labels_val.reset_index(drop=True)
         labels_test = labels_test.reset_index(drop=True)
 
-        train_balanced = AnchorBalancedSampler(labels_train["event"].values, anchor_class=0, batch_size=self.batch_size)
+        anchor_class = 1
+
+        train_balanced = AnchorBalancedSampler(labels_train["event"].values, anchor_class=anchor_class, batch_size=self.batch_size)
         #train_balanced = EventsBalancedBatchSampler(labels_train["event"].values)
         #train_balanced = RandomSampler(self.train_dset, num_samples=self.train_num_per_epoch)
-        val_balanced = AnchorBalancedSampler(labels_val["event"].values, anchor_class=0, batch_size=self.batch_size)
+        val_balanced = AnchorBalancedSampler(labels_val["event"].values, anchor_class=anchor_class, batch_size=self.batch_size)
         #val_balanced = RandomSampler(self.val_dset, num_samples=self.train_num_per_epoch)
         #print("len val_balanced: ", len(val_balanced))
         #val_balanced = EventsBalancedBatchSampler(labels_val["event"].values)
-        test_balanced = AnchorBalancedSampler(labels_test["event"].values, anchor_class=0, batch_size=self.batch_size)
+        test_balanced = AnchorBalancedSampler(labels_test["event"].values, anchor_class=anchor_class, batch_size=self.batch_size)
         #test_balanced = EventsBalancedBatchSampler(labels_test["event"].values)
         
 

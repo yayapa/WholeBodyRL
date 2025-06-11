@@ -71,6 +71,7 @@ class WB3DWatFat(AbstractDataset):
         self.both_contrast = kwargs.get("both_contrast", True)
         self.return_body_mask = kwargs.get("return_body_mask", True)
         self.slice_num = 2
+        self.crop_or_pad = tio.CropOrPad(self.img_size)
 
 
     def _load_nifti_image(self, img_path):
@@ -94,14 +95,9 @@ class WB3DWatFat(AbstractDataset):
         
 
 
-        transforms = tio.transforms.Compose(
-            [
-                tio.transforms.CropOrPad(self.img_size),
-            ]
-        )
-        image_nifti_wat = transforms(image_nifti_wat)
+        image_nifti_wat = self.crop_or_pad(image_nifti_wat)
         if self.both_contrast:
-            image_nifti_fat = transforms(image_nifti_fat)
+            image_nifti_fat = self.crop_or_pad(image_nifti_fat)
             image = np.concatenate((image_nifti_wat, image_nifti_fat), axis=0)
             del image_nifti_wat, image_nifti_fat
         else:
@@ -109,25 +105,6 @@ class WB3DWatFat(AbstractDataset):
             del image_nifti_wat
         
         gc.collect()
-
-        if self.return_body_mask:
-
-            body_mask_path = os.path.join(self.body_mask_dir, str(self.labels.loc[idx, EID_COL]), "body_mask.nii.gz")
-            body_mask = self._load_nifti_image(body_mask_path)
-            # add 1 channel dimension
-            body_mask = np.expand_dims(body_mask, axis=0)
-            # crop or pad body mask
-            body_mask = tio.CropOrPad(self.img_size)(body_mask)
-
-            # print the number of 1 in the body mask:
-
-            # duplicate body mask for 2 channels
-            if self.both_contrast:
-                body_mask = body_mask.repeat(2, axis=0)
-            body_mask = torch.from_numpy(body_mask).float()
-            body_mask = body_mask.permute(0, 3, 2, 1)   # [2, 360, 168, 224]
-            batch_dict["body_mask"] = body_mask
-        
 
         if self.augmentation:
             image = self._apply_augmentation(image)
@@ -137,6 +114,24 @@ class WB3DWatFat(AbstractDataset):
         image = image.permute(0, 3, 2, 1) # [2, 363, 224, 168]
 
         batch_dict["image"] = image
+
+        if self.return_body_mask:
+
+            body_mask_path = os.path.join(self.body_mask_dir, str(self.labels.loc[idx, EID_COL]), "body_mask.nii.gz")
+            body_mask = self._load_nifti_image(body_mask_path)
+            # add 1 channel dimension
+            body_mask = np.expand_dims(body_mask, axis=0)
+            # crop or pad body mask
+            body_mask = self.crop_or_pad(body_mask)
+
+            # print the number of 1 in the body mask:
+
+            # duplicate body mask for 2 channels
+            if self.both_contrast:
+                body_mask = body_mask.repeat(2, axis=0)
+            body_mask = torch.from_numpy(body_mask).float()
+            body_mask = body_mask.permute(0, 3, 2, 1)   # [2, 360, 168, 224]
+            batch_dict["body_mask"] = body_mask
 
         if self.target_value_name:
             if self.target_value_name == "survival":
@@ -149,6 +144,8 @@ class WB3DWatFat(AbstractDataset):
         batch_dict["target_value"] = target_value
 
         batch_dict["sub_idx"] = idx
+
+        batch_dict["eid"] = str(self.labels.loc[idx, EID_COL])
 
         return batch_dict
 

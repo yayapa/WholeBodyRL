@@ -1,6 +1,9 @@
 """Parameters for the module in a nested dataclass manner."""
 
+from ast import List
 from dataclasses import asdict, dataclass, fields, field
+from gc import unfreeze
+from torch import dropout
 import yaml
 from typing import Any, Dict, Optional, Tuple
 
@@ -105,6 +108,12 @@ class NFGMAEParams:
     dh_alpha: float = 0.2
     dh_sigma: float = 0.1
     risk: int = 4
+    rep_layers: list = field(default_factory=lambda: [512, 512])
+    surv_layers: list = field(default_factory=lambda: [512])
+    act: str = "Tanh"
+    dropout: float = 0.0
+    multihead: bool = True
+
     
 
 @dataclass
@@ -131,6 +140,9 @@ class TrainingParams:
     loss_types: Tuple[str, ...] = ("mse")
     loss_weights: Tuple[float, ...] = (1.0,)
     patience: int = 3
+    unfreeze_encoder_at: int = 10
+    scale_encoder_lr: float = 0.1
+
     
     
 @dataclass
