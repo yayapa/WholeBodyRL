@@ -1,12 +1,12 @@
 general:
   seed: 1
-  wandb_disabled: "true"
+  wandb_disabled: "false"
   # wandb_run_id: zfj1aw9x
-  freeze_encoder: False
+  freeze_encoder: True
   resume_training: False
   load_encoder: True
-  #ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_wat/model-epoch=244-val_PSNR=31.69.ckpt"
-  ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_fat_wat/model-epoch=299-val_PSNR=32.18.ckpt"
+  ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_wat/model-epoch=244-val_PSNR=31.69.ckpt"
+  #ckpt_path: "/vol/miltank/projects/ukbb/data/whole_body/mae_embeddings/checkpoints/recon_0.7_fat_wat/model-epoch=299-val_PSNR=32.18.ckpt"
 
 data:
   replace_processed: False
@@ -15,11 +15,11 @@ data:
   num_train: 1932 #1932
   num_val: 484 #484
   num_test: 605 #605
-  num_workers: 2
-  batch_size: 2
+  num_workers: 5
+  batch_size: 5
   dataset_cls: WB3DWatFat
   target_value_name: "survival" # "Age", "LVM (g)", "RAEF (%)", "RVEF (%)", "RVEDV (mL)", "LASV (mL)"
-  both_contrast: True
+  both_contrast: False
   return_body_mask: False
 
 
@@ -28,19 +28,25 @@ module:
   module_idx: 0 # NFGMAE: 0, DeepHitMAE:1
   
   surv_hparams:
-    enc_embed_dim: 1025 # 1024 1025
+    enc_embed_dim: 1024 # 1024 1025
     enc_depth: 6
-    enc_num_heads: 5 # 4 5
-    dec_embed_dim: 1025 # 1024
+    enc_num_heads: 4 # 4 5
+    dec_embed_dim: 1024 # 1024
     dec_depth: 2
     representation_type: "cls_token" # "linear", "cls_token"
     risks: 4
     labtrans_n: 15
     dh_alpha: 1.0
     dh_sigma: 0.1
+    rep_layers: [512, 512]
+    surv_layers: [512]
+    act: "Tanh"
+    dropout: 0.0
+    multihead: True
+
 
   training_params:
-    lr: 0.00001
+    lr: 0.0001
     patch_size: [15, 10, 10]
     mask_type: "random_roi"
     mask_ratio: 0.0
@@ -49,6 +55,8 @@ module:
     train_log_rate: 1
     val_log_rate: 5
     patience: 3  # validation checks
+    unfreeze_encoder_at: 10  # epochs after which to unfreeze the encoder
+    scale_encoder_lr: 0.01
 
 
 trainer:

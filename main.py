@@ -28,6 +28,8 @@ from data.dataloaders import SetEpochCallback
 import torch.distributed as dist
 import pandas as pd
 
+from utils.finetuning import FreezeEncoder
+
 
 
 def parser_command_line():
@@ -57,6 +59,7 @@ def parser_command_line():
 
 
 def main():
+    callbacks = []
     load_dotenv()
     torch.backends.cudnn.enabled = True
     torch.set_float32_matmul_precision("medium")
@@ -182,7 +185,13 @@ def main():
         model.load_state_dict(processed_dict, strict=False)
     
     if params.general.freeze_encoder: # Freeze encoder
-        BaseFinetuning.freeze([model.patch_embed, model.encoder, model.encoder_norm])
+        print("Freezing encoder with unfreeze at epoch", params.module.training_params.unfreeze_encoder_at, "and lr scale", params.module.training_params.scale_encoder_lr)
+        freezeEncoder_callback = FreezeEncoder(
+            unfreeze_at=params.module.training_params.unfreeze_encoder_at,
+            lr_scale=params.module.training_params.scale_encoder_lr
+        )
+        callbacks.append(freezeEncoder_callback)
+        #BaseFinetuning.freeze([model.patch_embed, model.encoder, model.encoder_norm])
                 
     # Monitor foreground dice for segmentation. When reconstruction, monitor PSNR. MAE for regression.
     if params.general.resume_training:
@@ -199,12 +208,14 @@ def main():
     os.makedirs(ckpt_dir, exist_ok=True)
     checkpoint_callback = ModelCheckpoint(dirpath=ckpt_dir, filename=ckpt_filename, monitor=monitor_metric, 
                                           mode=monitor_mode, save_top_k=3, save_last=True, verbose=True,)
+    callbacks.append(checkpoint_callback)
     early_stopping_callback = EarlyStopping(
         monitor=monitor_metric,
         patience=params.module.training_params.patience,
         mode=monitor_mode,
         verbose=True,
     )
+    callbacks.append(early_stopping_callback)
     set_epoch_callback = SetEpochCallback()
 
     print("Before trainer")
@@ -213,7 +224,7 @@ def main():
         trainer = Trainer(
             default_root_dir=paths.log_folder,
             logger=logger,
-            callbacks=[checkpoint_callback, early_stopping_callback],
+            callbacks=callbacks,
             fast_dev_run=False,
             limit_train_batches=1.0,
             #limit_val_batches=1.0,
@@ -234,13 +245,13 @@ def main():
         trainer = Trainer(
             default_root_dir=paths.log_folder,
             logger=logger,
-            callbacks=[checkpoint_callback, early_stopping_callback] ,
+            callbacks=callbacks ,
             fast_dev_run=False,
             limit_train_batches=1.0,
             limit_val_batches=1.0,
             num_sanity_val_steps=0,
             benchmark=True,
-            precision="16",
+            #precision="16",
             **params.trainer.__dict__,
         )
         #if args.pipeline == "eval":
