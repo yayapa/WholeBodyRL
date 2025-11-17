@@ -396,3 +396,186 @@ class WBDataModule(pl.LightningDataModule):
 
     def test_dataloader(self):
         return self._test_dataloader
+    
+
+class BrainDataModule(pl.LightningDataModule):
+    def __init__(self,
+                 load_dir: str,
+                 labels_folder: str,
+                 dataset_cls: Dataset = AbstractDataset, load_seg: bool = False,
+                 num_train: int = 1000, num_val: int = 100, num_test: int = 100,
+                 train_num_per_epoch: int = 1000,
+                 all_value_names: list[str] = None,
+                 target_value_name: str = None,
+                 batch_size: int = 16,
+                 num_workers: int = 8,
+                 image_size: list[int] = [173, 221, 213],
+                 augment: bool = True,
+                 sorting_group: int = 5,
+                 replace_processed: bool = False,
+                 roi_mask_dir: str = None,
+                 multi_gpu: bool = False,
+                 labels_file: str = "labels.csv",
+                 augmentations: list = ["random_flip"],
+                 return_roi_mask: bool = True,
+                 **kwargs):
+        super().__init__()
+
+        self.load_dir = load_dir
+        self.labels_folder = labels_folder
+
+        self.dataset_cls = dataset_cls
+        self.num_train = num_train
+        self.num_val = num_val
+        self.num_test = num_test
+        self.train_num_per_epoch = train_num_per_epoch
+        self.batch_size = batch_size
+        self.num_workers = num_workers
+
+        self.all_value_names = all_value_names
+        self.target_value_name = target_value_name
+        print("image_size: ", image_size)
+        self.image_size = image_size
+        self.augment = augment
+        self.sorting_group = sorting_group
+        self.replace_processed = replace_processed
+
+        self.train_dset = None
+        self.val_dset = None
+        self.test_dset = None
+        self.num_cases = num_train + num_val + num_test
+        self.roi_mask_dir = roi_mask_dir
+        self.multi_gpu = multi_gpu
+        self.labels_file = labels_file
+        self.augmentations = augmentations
+        print("Using augmentations: ", self.augmentations)
+        self.return_roi_mask = return_roi_mask
+
+    def setup(self, stage):
+
+        labels = pd.read_csv(os.path.join(self.labels_folder, self.labels_file))
+        labels_train = labels[labels["split"] == "train"]
+        labels_val = labels[labels["split"] == "val"]
+        labels_test = labels[labels["split"] == "test"]
+
+        # reset index
+        labels_train = labels_train.reset_index(drop=True)
+        labels_val = labels_val.reset_index(drop=True)
+        labels_test = labels_test.reset_index(drop=True)
+
+        anchor_class = 1
+
+        #train_balanced = AnchorBalancedSampler(labels_train["event"].values, anchor_class=anchor_class, batch_size=self.batch_size)
+        #train_balanced = EventsBalancedBatchSampler(labels_train["event"].values)
+        train_balanced = RandomSampler(self.train_dset, num_samples=self.train_num_per_epoch)
+        #val_balanced = AnchorBalancedSampler(labels_val["event"].values, anchor_class=anchor_class, batch_size=self.batch_size)
+        val_balanced = RandomSampler(self.val_dset, num_samples=self.train_num_per_epoch)
+        #print("len val_balanced: ", len(val_balanced))
+        #val_balanced = EventsBalancedBatchSampler(labels_val["event"].values)
+        #test_balanced = AnchorBalancedSampler(labels_test["event"].values, anchor_class=anchor_class, batch_size=self.batch_size)
+        #test_balanced = EventsBalancedBatchSampler(labels_test["event"].values)
+        test_balanced = RandomSampler(self.test_dset, num_samples=self.train_num_per_epoch)
+        
+
+        self.train_dset = eval(f'{self.dataset_cls}')(
+            labels=labels_train,
+            target_value_name=self.target_value_name,
+            load_dir=self.load_dir,
+            augs=self.augment,
+            img_size=self.image_size,
+            roi_mask_dir=self.roi_mask_dir,
+            augmentations=self.augmentations,
+            return_roi_mask=self.return_roi_mask
+        )
+        self.val_dset = eval(f'{self.dataset_cls}_Test')(
+            labels=labels_val,
+            target_value_name=self.target_value_name,
+            load_dir=self.load_dir,
+            augs=self.augment,
+            img_size=self.image_size,
+            roi_mask_dir=self.roi_mask_dir,
+            augmentations=self.augmentations,
+            return_roi_mask=self.return_roi_mask
+        )
+        self.test_dset = eval(f'{self.dataset_cls}_Test')(
+            labels=labels_test,
+            target_value_name=self.target_value_name,
+            load_dir=self.load_dir,
+            augs=self.augment,
+            img_size=self.image_size,
+            roi_mask_dir=self.roi_mask_dir,
+            augmentations=self.augmentations,
+            return_roi_mask=self.return_roi_mask
+        )
+
+        if self.multi_gpu:
+            print("Using multi-gpu training")
+            print("RandomDistributedSampler is initialized with train_num_per_epoch: ", self.train_num_per_epoch)
+            per_gpu_batch_size = self.batch_size
+            self._train_dataloader = DataLoader(self.train_dset,
+                                                batch_size=per_gpu_batch_size,
+                                                #sampler=RandomSampler(self.train_dset,
+                                                #                 num_samples=self.train_num_per_epoch),
+                                                sampler=RandomDistributedSampler(self.train_dset,
+                                                                      num_samples=self.train_num_per_epoch),
+                                                num_workers=self.num_workers,
+                                                pin_memory=True,
+                                                persistent_workers=self.num_workers > 0)
+
+        else:
+            if self.target_value_name == "survival":
+                self._train_dataloader = DataLoader(self.train_dset,
+                                                    batch_size=self.batch_size,
+                                                    sampler=train_balanced,
+                                                    num_workers=self.num_workers,
+                                                    #pin_memory=False,
+                                                    #persistent_workers=False,
+                                                    pin_memory=True,
+                                                    persistent_workers=self.num_workers > 0
+                                                    #prefetch_factor=1,
+                                                    )
+            else:
+                self._train_dataloader = DataLoader(self.train_dset,
+                                            batch_size=self.batch_size,
+                                            sampler=RandomSampler(self.train_dset,
+                                                                  num_samples=self.train_num_per_epoch),
+                                            num_workers=self.num_workers,
+                                            pin_memory=True,
+                                            persistent_workers=self.num_workers > 0)
+        if self.target_value_name == "survival":
+            self._val_dataloader = DataLoader(self.val_dset,
+                                            batch_size=self.batch_size,
+                                            sampler=val_balanced,
+                                            num_workers=self.num_workers,
+                                            #pin_memory=False,
+                                            #persistent_workers=False,
+                                            pin_memory=True,
+                                            persistent_workers=self.num_workers > 0,
+                                            drop_last=False
+                                            )
+        else:    
+            self._val_dataloader = DataLoader(self.val_dset, batch_size=self.batch_size, num_workers=0)
+        self._test_dataloader = DataLoader(self.test_dset, batch_size=self.batch_size, num_workers=0, drop_last=False)
+
+        if "time_to_event" in labels.columns:
+            self.durations = np.array(labels[labels["split"] == "train"]["time_to_event"].values.tolist())
+        else:
+            self.durations = None
+
+        if "event" in labels.columns:
+            #unique event labels 
+            self.num_events = labels["event"].unique()
+            self.num_events = len(self.num_events)
+            print("num events: ", self.num_events)
+            self.events = np.array(labels[labels["split"] == "train"]["event"].values.tolist())
+        else:   
+            self.num_events = None
+
+    def train_dataloader(self):
+        return self._train_dataloader
+
+    def val_dataloader(self):
+        return self._val_dataloader
+
+    def test_dataloader(self):
+        return self._test_dataloader

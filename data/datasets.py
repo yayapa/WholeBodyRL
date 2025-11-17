@@ -9,6 +9,8 @@ from torchvision import transforms as v2
 from torch.utils.data import Dataset
 from typing import Tuple, Optional
 
+from zmq import has
+
 from utils import image_normalization
 from data.transforms import *
 import nibabel as nib
@@ -19,7 +21,8 @@ import gc
 __all__ = ["Cardiac2DplusT", "Cardiac2DplusT_Test", "Cardiac3DSAX", "Cardiac3DSAX_Test", 
            "Cardiac3DLAX", "Cardiac3DLAX_Test", "Cardiac3DplusTSAX", "Cardiac3DplusTSAX_Test", 
            "Cardiac3DplusTLAX", "Cardiac3DplusTLAX_Test", "Cardiac3DplusTAllAX", "Cardiac3DplusTAllAX_Test",
-           "WB3DWatFat_Test", "WB3DWatFat"]
+           "WB3DWatFat_Test", "WB3DWatFat",
+           "T1Brain", "T1Brain_Test"]
 
 EID_COL = "eid"
 
@@ -232,6 +235,166 @@ class WB3DWatFat(AbstractDataset):
 
 
 class WB3DWatFat_Test(WB3DWatFat):
+
+    @property
+    def _augment(self) -> bool:
+        return False
+    
+
+class T1Brain(AbstractDataset):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.img_size = kwargs.get("img_size", (173, 221, 213))
+        print("T1Brain img_size:", self.img_size)
+        self.roi_mask_dir = kwargs.get("roi_mask_dir", None)
+        self.augmentations = kwargs.get("augmentations", None)
+        self.return_roi_mask = kwargs.get("return_roi_mask", True)
+        self.slice_num = 2
+        self.crop_or_pad = tio.CropOrPad(self.img_size)
+
+
+    def _load_nifti_image(self, img_path):
+        return nib.load(img_path).get_fdata(dtype=np.float32)  #added dtype
+
+    def __getitem__(self, idx):
+        batch_dict = {}
+        img_name = os.path.join(str(self.labels.loc[idx, EID_COL]), "T1", "T1.nii.gz")
+        img_path = os.path.join(self.load_dir, img_name)
+        image_nifti = self._load_nifti_image(img_path)
+        image_nifti = np.expand_dims(image_nifti, axis=0)  # add channel dimension
+        #print("original image shape:", image_nifti.shape)
+        image_nifti = self.crop_or_pad(image_nifti)
+
+        # Min-Max Normalization
+        image_nifti = self._min_max_normalize(image_nifti)
+
+
+        image = image_nifti.copy()
+        del image_nifti
+        
+        gc.collect()
+
+        if self.augmentation:
+            image = self._apply_augmentation(image)
+        
+        image = torch.from_numpy(image).float()  # [1, 173, 221, 213] torchio expects (C, W, H, D)
+        # permute to [C, D, H, W]
+        image = image.permute(0, 1, 3, 2) 
+
+        batch_dict["image"] = image
+
+        if self.return_roi_mask:
+
+            roi_mask_path = os.path.join(self.roi_mask_dir, str(self.labels.loc[idx, EID_COL]), "T1", "T1_brain_mask.nii.gz")
+            roi_mask = self._load_nifti_image(roi_mask_path)
+            # add 1 channel dimension
+            roi_mask = np.expand_dims(roi_mask, axis=0)
+            # crop or pad body mask
+            roi_mask = self.crop_or_pad(roi_mask)
+
+            roi_mask = torch.from_numpy(roi_mask).float()
+            roi_mask = roi_mask.permute(0, 1, 3, 2)   
+            batch_dict["roi_mask"] = roi_mask
+
+        #print("target value name:", self.target_value_name) 
+        if self.target_value_name:
+            if self.target_value_name == "survival":
+                t = self.labels.loc[idx, "time_to_event"]
+                e = self.labels.loc[idx, "event"]
+                target_value = (t, e)  
+                batch_dict["target_value"] = target_value
+            else: 
+                #target_value = self.labels.loc[idx, self.target_value_name]
+                target_value = None
+            #target_value = self._load_values(self._get_subject_id(idx))
+                batch_dict["target_value"] = target_value
+
+        batch_dict["sub_idx"] = idx
+
+        batch_dict["eid"] = str(self.labels.loc[idx, EID_COL])
+
+        return batch_dict
+
+    def _load_values(self, subject_idx: int):
+        """
+        Just copied. has to be revised
+        """
+        target_value = self.labels[self.labels[EID_COL] == subject_idx][self.target_value_name]
+        target_value = np.array(target_value.iloc[0].tolist(), dtype=np.float32)
+        target_value = torch.from_numpy(target_value).reshape(1)
+        return target_value
+
+    def _get_subject_id(self, index):
+        return int(self.labels[index].parent.name)
+
+    def _apply_augmentation(self, im):
+        im = self._apply_mask_boxes_augmentation(im)
+        augmnentations_compose = self._get_augmentations_compose()
+        transforms = tio.transforms.Compose(augmnentations_compose)
+
+        return transforms(im)
+
+    def  _get_augmentations_compose(self):
+        augmentations_compose = []
+        random_value = np.random.rand()
+        for augm in self.augmentations:
+            if augm == "random_flip":
+                augmentations_compose.append(tio.transforms.RandomFlip(axes=0, p=0.5))
+                augmentations_compose.append(tio.transforms.RandomFlip(axes=1, p=0.5))
+                augmentations_compose.append(tio.transforms.RandomFlip(axes=2, p=0.5))
+            elif augm == "random_blur":
+                augmentations_compose.append(tio.transforms.RandomBlur(p=0.5, std=np.min([random_value, 0.5])))
+            elif augm == "random_noise":
+                augmentations_compose.append(tio.transforms.RandomNoise(p=0.5, std=np.min([random_value, 0.5])))
+        return augmentations_compose
+    
+    def _apply_mask_boxes_augmentation(self, im):
+        if "mask_boxes" in self.augmentations:
+            nr_boxes = np.random.randint(0, 10)
+            # apply _mask_boxes to the water and fat images
+            image_nifti_wat = im[0, :, :, :]
+            image_nifti_wat = self._mask_boxes(image_nifti_wat, range_box_size=(20, 60), nr_boxes=nr_boxes)
+            if self.both_contrast:
+                image_nifti_fat = im[1, :, :, :]
+                image_nifti_fat = self._mask_boxes(image_nifti_fat, range_box_size=(20, 60), nr_boxes=nr_boxes)
+            if self.both_contrast:
+                im = np.stack((image_nifti_wat, image_nifti_fat), axis=0)
+            else:
+                im = image_nifti_wat
+        return im
+
+    
+    def _min_max_normalize(self, image):
+        """Applies min-max normalization to an image."""
+        # Flatten the image to find min and max values
+        min_val = np.min(image)
+        max_val = np.max(image)
+
+        # Handle edge case where min and max are the same (e.g., constant image)
+        if max_val == min_val:
+            return np.zeros_like(image)  # If all values are the same, return an array of zeros
+
+        # Apply min-max normalization to scale to [0, 1]
+        return (image - min_val) / (max_val - min_val)
+
+    def get_view(self) -> int:
+        return 1
+        
+    
+    def _mask_boxes(self, image, range_box_size:Tuple, nr_boxes:int):
+        for _ in range(nr_boxes):
+            z = np.random.randint(0, image.shape[0])
+            y = np.random.randint(0, image.shape[1])
+            x = np.random.randint(0, image.shape[2])
+            z_size = np.random.randint(range_box_size[0], range_box_size[1])
+            y_size = np.random.randint(range_box_size[0], range_box_size[1])
+            x_size = np.random.randint(range_box_size[0], range_box_size[1])
+            image[z:z+z_size, y:y+y_size, x:x+x_size] = 0
+
+        return image
+
+
+class T1Brain_Test(T1Brain):
 
     @property
     def _augment(self) -> bool:

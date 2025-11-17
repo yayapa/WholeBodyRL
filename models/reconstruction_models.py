@@ -91,7 +91,7 @@ class ReconMAE(BasicModule):
         self.patch_size = kwargs.get("patch_size")
         self.patch_embed_cls = globals()[kwargs.get("patch_embed_cls")]
         val_dataset= kwargs.get("val_dset")
-        self.img_shape = val_dataset[0][0].shape
+        self.img_shape = val_dataset[0]["image"].shape
         self.use_both_axes = True if val_dataset.get_view() == 2 else False # For positional embedding
         self.patch_p_num = np.prod(kwargs.get("patch_size")) * kwargs.get("patch_in_channels")
         # --------------------------------------------------------------------------
@@ -272,12 +272,12 @@ class ReconMAE(BasicModule):
         return pred, mask
         
     def training_step(self, batch, batch_idx, mode="train"):
-        imgs, _, sub_idx, body_masks = batch
+        imgs, sub_idx, roi_masks = batch["image"], batch["sub_idx"], batch["roi_mask"]
 
-        roi_mask_patchified = patchify(body_masks, patch_size=self.patch_size)  # [B, L]
+        roi_mask_patchified = patchify(roi_masks, patch_size=self.patch_size)  # [B, L]
         roi_mask_patchified = torch.any(roi_mask_patchified > 0, dim=-1).float()  # Collapse patch volume to [N, L], 1 if any element > 0
 
-        pred_patches, mask = self.forward(imgs, roi_masks=body_masks)
+        pred_patches, mask = self.forward(imgs, roi_masks=roi_masks)
         imgs_patches = patchify(imgs, patch_size=self.patch_size)
         #loss_dict, psnr_value = self.reconstruction_criterion(pred_patches, imgs_patches, mask)
         loss_dict, psnr_value = self.reconstruction_criterion(pred_patches, imgs_patches, roi_mask_patchified)
@@ -313,7 +313,7 @@ class ReconMAE(BasicModule):
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        imgs, _, sub_idx, body_masks = batch
+        imgs, sub_idx, roi_masks = batch["image"], batch["sub_idx"], batch["roi_mask"]
         if self.generate_embeddings is not None:
             embeddings = self.forward_encoder_eval(imgs)
             embeddings = embeddings.cpu().numpy()
