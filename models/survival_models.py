@@ -115,6 +115,7 @@ class NFGMAE(BasicModule):
         super().__init__(*args, **kwargs)
 
         # -------------------- Encoder (unmodified MAE ViT) --------------
+        self.ckpt_dir = kwargs.get("ckpt_dir", "")
         self.enc_embed_dim = kwargs.get("enc_embed_dim")
         self.dec_embed_dim = kwargs.get("dec_embed_dim", self.enc_embed_dim)
         self.patch_embed_cls = globals()[kwargs.get("patch_embed_cls")]
@@ -345,7 +346,7 @@ class NFGMAE(BasicModule):
         self.module_logger.update_metric_item("train/training_step", 1, mode="train")
         self.module_logger.update_metric_item("train/surv_loss", loss.detach().item(), mode="train")
         self.log_dict({f"{mode}_surv_loss": loss.detach().item()})
-        print("loss", loss.detach().item())
+        #print("loss", loss.detach().item())
 
         return loss
     
@@ -442,20 +443,17 @@ class NFGMAE(BasicModule):
         
         
         self._val_preds.append(df_surv.values)
-        self._val_idx.append(sub_idx.cpu().numpy())
 
         if self._df_columns is None:
             self._df_columns = df_surv.columns
         self._val_t.append(t.cpu().numpy())
         self._val_e.append(e.cpu().numpy())
-        self._val_idx.append(sub_idx.cpu().numpy())
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
         #imgs, (t, e), sub_idx, _ = batch  # actually (t, e)
         imgs = batch["image"]
         (t, e) = batch["target_value"]
-        sub_idx = batch["sub_idx"]
 
         imgs = imgs.float()  # Convert to float
         t = t.float()
@@ -464,7 +462,7 @@ class NFGMAE(BasicModule):
 
         rep = None
         
-        df_surv = self._collect_survexiival(imgs)   # helper from previous answer
+        df_surv = self._collect_survival(imgs)   # helper from previous answer
         
         
         self._test_preds.append(df_surv.values)
@@ -474,7 +472,6 @@ class NFGMAE(BasicModule):
     def on_test_epoch_end(self):
 
         curves = np.vstack(self._test_preds)              # (N, K·T)
-        #index  = np.concatenate(self._val_idx)                # (N,)
 
         df_surv_all = pd.DataFrame(curves,
                                 columns=self._df_columns)
@@ -605,14 +602,9 @@ class NFGMAE(BasicModule):
         time_grid = surv.columns.get_level_values(1).unique()
         risks = surv.columns.get_level_values(0).unique()
 
-        print(time_grid)
-        print(risks)
-
         results = {}
         for r in risks:
-            #print("Risk", r)
-            surv_r = surv[r]
-            #print("surv_r", surv_r)           
+            surv_r = surv[r]       
             dummy = pd.DataFrame(
                 np.ones((len(time_grid), len(self.t_train))),
                 index=time_grid
@@ -620,7 +612,6 @@ class NFGMAE(BasicModule):
             km = EvalSurv(dummy, self.t_train, self.e_train != 0, censor_surv="km")
             ev      = EvalSurv(surv_r.T, t, e == int(r), censor_surv=km)
 
-            km = (self.e_train, self.t_train)
 
                     # ---------------- overall CIS / IBS ---------------------------
             try:
@@ -631,11 +622,14 @@ class NFGMAE(BasicModule):
             res = {"CIS": cis_overall}
 
             try:
-                brs_overall = ev.integrated_brier_score(time_grid)
+                brs_overall = ev.integrated_brier_score(time_grid.to_numpy())
             except Exception:
+                print("Exception in integrated_brier_score")
                 brs_overall = np.nan
 
             res["BRS"] = brs_overall
+
+            km = (self.e_train, self.t_train)
 
             # horizons ------------------------------------------------------
             if times_eval is not None:
@@ -686,9 +680,10 @@ class DeepHitMAE(BasicModule):
         self.ckpt_dir = kwargs.get("ckpt_dir", "")
         self.enc_embed_dim = kwargs.get("enc_embed_dim")
         self.dec_embed_dim = kwargs.get("dec_embed_dim", self.enc_embed_dim)
+        print("dec_embed_dim", self.dec_embed_dim)
         self.patch_embed_cls = globals()[kwargs.get("patch_embed_cls")]
         val_dataset = kwargs.get("val_dset")
-        self.img_shape = val_dataset[0][0].shape  # type: ignore[index]
+        self.img_shape = val_dataset[0]['image'].shape  # type: ignore[index]
         self.use_both_axes = bool(getattr(val_dataset, "get_view", lambda: 1)() == 2)
 
         self.patch_embed = self.patch_embed_cls(
@@ -817,7 +812,7 @@ class DeepHitMAE(BasicModule):
 
     def _project_tokens(self, tok: torch.Tensor) -> torch.Tensor:
         if self.representation_type == "cls_token":
-            return tok[:, :1, :]
+            return tok[:, 0, :]  # here was tok[:, :1, :]
         if self._flatten_fc is None:
             self._flatten_fc = nn.Linear((tok.size(1) - 1) * tok.size(2), self.dec_embed_dim)
         patches_flat = tok[:, 1:, :].flatten(1)
@@ -866,7 +861,7 @@ class DeepHitMAE(BasicModule):
         imgs = imgs.float()
         t = t.float()
         e = e.long()
-
+        
         durations_idx, events_idx = self._discretise_labels(t, e)
         logits = self.forward(imgs)
 
@@ -986,6 +981,10 @@ class DeepHitMAE(BasicModule):
         imgs = batch["image"]
         (t, e) = batch["target_value"]
         sub_idx = batch["sub_idx"]
+
+        print("shape of imgs", imgs.shape)
+        print("shape of t", t.shape)
+        print("shape of e", e.shape)
 
         imgs = imgs.float()
         t = t.float()
@@ -1166,22 +1165,15 @@ class DeepHitMAE(BasicModule):
         time_grid = surv.columns.get_level_values(1).unique()
         risks = surv.columns.get_level_values(0).unique()
 
-        print(time_grid)
-        print(risks)
-
         results = {}
         for r in risks:
-            #print("Risk", r)
-            surv_r = surv[r]
-            #print("surv_r", surv_r)           
+            surv_r = surv[r]           
             dummy = pd.DataFrame(
                 np.ones((len(time_grid), len(self.t_train))),
                 index=time_grid
             )                        # (N , |grid|)
             km = EvalSurv(dummy, self.t_train, self.e_train != 0, censor_surv="km")
             ev      = EvalSurv(surv_r.T, t, e == int(r), censor_surv=km)
-
-            km = (self.e_train, self.t_train)
 
                     # ---------------- overall CIS / IBS ---------------------------
             try:
@@ -1192,11 +1184,15 @@ class DeepHitMAE(BasicModule):
             res = {"CIS": cis_overall}
 
             try:
-                brs_overall = ev.integrated_brier_score(time_grid)
+                brs_overall = ev.integrated_brier_score(time_grid.to_numpy())
             except Exception:
+                print("Exception in integrated_brier_score")
                 brs_overall = np.nan
 
             res["BRS"] = brs_overall
+
+
+            km = (self.e_train, self.t_train)
 
             # horizons ------------------------------------------------------
             if times_eval is not None:

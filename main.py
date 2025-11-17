@@ -10,7 +10,7 @@ from sympy import N
 import torch
 import wandb
 
-from data.dataloaders import WBDataModule
+from data.dataloaders import WBDataModule, BrainDataModule
 from models.reconstruction_models import ReconMAE
 from models.regression_models import RegrMAE, ResNet18Module, ResNet18Module3D, ResNet50Module
 from models.survival_models import NFGMAE, DeepHitMAE
@@ -103,24 +103,35 @@ def main():
         rank = dist.get_rank()
         if rank == 0:
             wandb.init(
-                project="WholeBodyRL",
+                #project="WholeBodyRL",
+                project="BrainRL",
                 config=asdict(params),
                 **wandb_kwargs,
             )
         else:
             os.environ["WANDB_MODE"] = "disabled"  # Disable WandB for other ranks
     else:
-        wandb.init(project="WholeBodyRL", config=asdict(params), **wandb_kwargs,)
+        wandb.init(
+            #project="WholeBodyRL", 
+            project="BrainRL",
+            config=asdict(params), **wandb_kwargs,)
     
-
-    data_module = WBDataModule(
+    data_module = BrainDataModule(
         load_dir=paths.dataset_folder,
         labels_folder=paths.labels_folder,
-        body_mask_dir=paths.body_mask_folder,
+        roi_mask_dir=paths.roi_mask_folder,
         multi_gpu=multi_gpu,
         labels_file=args.labels_file,
         **params.data.__dict__
     )
+    #data_module = WBDataModule(
+    #    load_dir=paths.dataset_folder,
+    #    labels_folder=paths.labels_folder,
+    #    body_mask_dir=paths.body_mask_folder,
+    #    multi_gpu=multi_gpu,
+    #    labels_file=args.labels_file,
+    #    **params.data.__dict__
+    #)
     data_module.setup("fit")
 
     # Initialze lighting module
@@ -149,9 +160,11 @@ def main():
         durations = data_module.durations
     else:
         durations = None
-    if hasattr(data_module, "events"):
+    if hasattr(data_module, "events") and data_module.events is not None:
         events = data_module.events
-    if hasattr(data_module, "num_events"):
+    else:
+        events = None
+    if hasattr(data_module, "num_events") and data_module.num_events is not None:
         risks = data_module.num_events - 1
     else:
         risks = None
@@ -159,11 +172,12 @@ def main():
         labtrans_n = data_module.labtrans_n
     else:
         labtrans_n = None
+
     
-    print("module_params:", module_params)
     model = module_cls(val_dset=data_module.val_dset, durations=durations, events=events, risks=risks, **module_params)
     print("After model load")
     print("ckpt path:", params.general.ckpt_path)
+
     
     # Check the resuming and loading of the checkpoints
     resume_ckpt_path = None
@@ -215,7 +229,7 @@ def main():
         mode=monitor_mode,
         verbose=True,
     )
-    callbacks.append(early_stopping_callback)
+    #callbacks.append(early_stopping_callback)
     set_epoch_callback = SetEpochCallback()
 
     print("Before trainer")

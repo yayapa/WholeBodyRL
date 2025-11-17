@@ -164,7 +164,7 @@ class RegrMAE(BasicModule):
         # Save predictions to csv
         df = pd.DataFrame(self.test_preds)
         print("save test set predictions in ", self.logger.log_dir)
-        df.to_csv(self.logger.log_dir + "/test_preds.csv", index=False)
+        df.to_csv(self.logger.log_dir + "/test_predsc", index=False)
         
     def log_regr_metrics(self, loss, mae, mode="train"):
         self.module_logger.update_metric_item(f"{mode}/regr_loss", loss.detach().item(), mode=mode)

@@ -1,0 +1,55 @@
+general:
+  seed: 1 # 1 for 0.7 mask ratio, 32 for 0.9
+  wandb_disabled: "false"
+  # wandb_run_id: 
+  freeze_encoder: False
+  resume_training: True
+  load_encoder: False
+  ckpt_path: "/vol/miltank/users/sdm/Projects/BrainRL/logs/checkpoints/recon_0.7/08-11-2025_08-55-12/last.ckpt"
+
+data:
+  replace_processed: False
+  #sax_slice_num: 6 # 6 for 3D, 1 for 2D
+  contrast_slice_num: 2
+  image_size: [160, 200, 200]
+  train_num_per_epoch: 5000
+  #num_train: 31799 67993h
+  num_train: 47593
+  num_val: 100
+  num_test: 100
+  num_workers: 4
+  batch_size: 2
+  dataset_cls: T1Brain
+  augmentations: ["random_flip"]
+  both_contrast: False
+
+
+module:
+  task_idx: 0 # reconstrucion: 0, regression: 1, segmentation: 2
+  module_idx: 0 # ReconMAE: 0, CLReconMAE: 1, DisentangleReconMAE: 2
+  
+  recon_hparams:
+    enc_embed_dim: 1024 #1025
+    enc_depth: 6 #6
+    enc_num_heads: 4 #5
+    dec_embed_dim: 1024 #1025
+    dec_depth: 2
+    dec_num_heads: 4 #5
+
+  training_params:
+    patch_size: [8, 8, 8]
+    #mask_type: "random_roi"
+    mask_type: "random_roi"
+    mask_ratio: 0.7 #0.25
+    loss_types: ["mse"] # [mse]
+    loss_weights: [1.0]
+    train_log_rate: 3
+    val_log_rate: 3
+    patch_in_channels: 1
+    lr: 0.00001
+    max_lr: 0.001
+
+
+trainer:
+  max_epochs: 500
+  check_val_every_n_epoch: 5

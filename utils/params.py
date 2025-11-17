@@ -42,8 +42,8 @@ class DataParams:
     
     dataset_cls: str = "WB3DWatFat"
     load_seg: bool = False
-    all_value_names: Tuple[str, ...] = ("age", "bmi", "sex")
-    target_value_name: str = "age" # Only select the ones that are involved in training
+    all_value_names: Tuple[str, ...] = None #("age", "bmi", "sex")
+    target_value_name: str = None #"age" # Only select the ones that are involved in training
     
     contrast_slice_num: int = 2
     time_frame: int = 50

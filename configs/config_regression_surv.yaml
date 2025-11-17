@@ -31,22 +31,22 @@ module:
     enc_embed_dim: 1024 # 1024 1025
     enc_depth: 6
     enc_num_heads: 4 # 4 5
-    dec_embed_dim: 1024 # 1024
+    dec_embed_dim: 256 # 1024
     dec_depth: 2
     representation_type: "cls_token" # "linear", "cls_token"
     risks: 4
     labtrans_n: 15
     dh_alpha: 1.0
     dh_sigma: 0.1
-    rep_layers: [512, 512]
-    surv_layers: [512]
+    rep_layers: [128, 64] #[512, 512]
+    surv_layers: [64] #[512]
     act: "Tanh"
     dropout: 0.0
     multihead: True
 
 
   training_params:
-    lr: 0.0001
+    lr: 0.00001
     patch_size: [15, 10, 10]
     mask_type: "random_roi"
     mask_ratio: 0.0
@@ -54,9 +54,9 @@ module:
     loss_weights: [1.0]
     train_log_rate: 1
     val_log_rate: 5
-    patience: 3  # validation checks
+    patience: 4  # validation checks
     unfreeze_encoder_at: 10  # epochs after which to unfreeze the encoder
-    scale_encoder_lr: 0.01
+    scale_encoder_lr: 0.1
 
 
 trainer:

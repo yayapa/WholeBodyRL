@@ -40,6 +40,8 @@ class CauseSpecificNet(torch.nn.Module):
             ]
         )
 
+        print("risk nets:", self.risk_nets)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:  # (B, D) → (B, K, T)
         out = [net(x) for net in self.risk_nets]  # list of (B, T)
         out = torch.stack(out, dim=1)  # (B, K, T)

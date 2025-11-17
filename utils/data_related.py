@@ -18,6 +18,7 @@ class PathHolder:
     log_folder: str
     labels_folder: str
     body_mask_folder: str
+    roi_mask_folder: str
 
 
 def get_computer_id():
@@ -35,7 +36,9 @@ def get_data_paths():
     return PathHolder(dataset_folder=os.path.join(os.environ["DATA_ROOT"]),
                         log_folder=os.path.join(os.environ["LOG_FOLDER"]),
                       labels_folder=os.path.join(os.environ["LABELS_FOLDER"]),
-                      body_mask_folder=os.path.join(os.environ["BODY_MASK_FOLDER"]))
+                      body_mask_folder=os.path.join(os.environ["BODY_MASK_FOLDER"]),
+                      roi_mask_folder=os.path.join(os.environ["ROI_PATH_FOLDER"])
+                      )
 
 
 
